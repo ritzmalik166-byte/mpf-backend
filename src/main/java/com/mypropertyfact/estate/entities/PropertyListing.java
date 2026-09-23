@@ -139,8 +139,8 @@ public class PropertyListing {
     @Column(name = "facing", length = 50)
     private String facing;
     
-    @Column(name = "age_of_construction")
-    private Integer ageOfConstruction;
+    @Column(name = "age_of_construction", length = 50)
+    private String ageOfConstruction;
     
     // ========== CONFIGURATION ==========
     

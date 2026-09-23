@@ -43,7 +43,7 @@ public class UserPropertySubmissionDto {
     private Integer floor;
     private Integer totalFloors;
     private String facing;
-    private Integer ageOfConstruction;
+    private String ageOfConstruction;
     
     // Configuration
     private Integer bedrooms;            // BHK
