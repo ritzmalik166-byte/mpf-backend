@@ -52,8 +52,8 @@ public class PropertyListingRequestDto {
     private Integer totalFloors;
     private String facing;
     private String unitFacing;           // Same as facing
-    private Integer ageOfConstruction;
-    private Integer ageOfProperty;       // Same as ageOfConstruction
+    private String ageOfConstruction;
+    private String ageOfProperty;       // Same as ageOfConstruction
     private Integer carParkingSlots;     // Extracted from parking string
     private String parkingType;          // Full parking string
     private String powerBackup;
