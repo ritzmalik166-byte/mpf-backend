@@ -20,6 +20,8 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -524,12 +526,318 @@ public class ProjectService {
     @Transactional
     public List<ProjectShortDetails> getProjectInParts(Integer page, Integer size) {
         List<ProjectShortDetails> allProjects = projectRepository.findAllProjects();
-        int start = page * size;
-        int end = Math.min(start + size, allProjects.size());
-        if(start > allProjects.size()) {
+        if (allProjects == null || allProjects.isEmpty()) return List.of();
+        int safePage = page == null || page < 0 ? 0 : page;
+        int safeSize = size == null || size < 1 ? 10 : size;
+        int start = safePage * safeSize;
+        int end = Math.min(start + safeSize, allProjects.size());
+        if (start > allProjects.size()) {
             return List.of();
         }
         return allProjects.subList(start, end);
+    }
+
+    /**
+     * One page of listing cards. Page is 1-based. Gallery files are names only,
+     * attached for the current page so listing cards do not call the detail API.
+     */
+    @Transactional(readOnly = true)
+    public ProjectCardPageResponse getProjectListingPage(
+            Integer page,
+            Integer limit,
+            String tab,
+            String city,
+            String budget,
+            String projectStatus,
+            String bhkType,
+            String configType,
+            String quick,
+            String sort,
+            String query,
+            Integer projectId,
+            String slug,
+            boolean suggest
+    ) {
+        int safeLimit = suggest
+                ? Math.min(Math.max(limit == null ? 8 : limit, 1), 8)
+                : Math.min(Math.max(limit == null ? 10 : limit, 1), 24);
+        int safePage = page == null || page < 1 ? 1 : page;
+
+        List<ProjectShortDetails> context = new ArrayList<>();
+        for (ProjectShortDetails project : publicProjects()) {
+            if (!matchesListingContext(project, tab, city, budget, projectStatus)) continue;
+            context.add(project);
+        }
+
+        Map<String, Integer> quickCounts = new LinkedHashMap<>();
+        quickCounts.put("ready", 0);
+        quickCounts.put("new", 0);
+        quickCounts.put("under-construction", 0);
+        quickCounts.put("ultra-luxury", 0);
+        for (ProjectShortDetails project : context) {
+            if (!matchesBhk(project.getProjectConfiguration(), bhkType)) continue;
+            if (!matchesConfig(project.getProjectConfiguration(), configType)) continue;
+            String statusNorm = norm(project.getProjectStatusName());
+            for (String key : quickCounts.keySet()) {
+                if (matchesQuick(statusNorm, key)) {
+                    quickCounts.put(key, quickCounts.get(key) + 1);
+                }
+            }
+        }
+
+        List<ProjectShortDetails> filtered = new ArrayList<>();
+        for (ProjectShortDetails project : context) {
+            if (!matchesQuick(norm(project.getProjectStatusName()), quick)) continue;
+            if (suggest) {
+                if (!matchesQuery(project, query)) continue;
+                filtered.add(project);
+                continue;
+            }
+            if (!matchesBhk(project.getProjectConfiguration(), bhkType)) continue;
+            if (!matchesConfig(project.getProjectConfiguration(), configType)) continue;
+            if (!matchesQuery(project, query)) continue;
+            if (projectId != null && projectId > 0 && project.getId() != projectId) continue;
+            if (slug != null && !slug.isBlank()
+                    && !slug.equalsIgnoreCase(String.valueOf(project.getSlugURL()))) {
+                continue;
+            }
+            filtered.add(project);
+        }
+
+        sortProjects(filtered, sort);
+
+        ProjectCardPageResponse response = new ProjectCardPageResponse();
+        response.setPage(suggest ? 1 : safePage);
+        response.setLimit(safeLimit);
+        response.setTotal(filtered.size());
+        response.setTotalPages(Math.max(1, (int) Math.ceil(filtered.size() / (double) safeLimit)));
+        response.setQuickFilterCounts(quickCounts);
+
+        int from = suggest ? 0 : Math.min((safePage - 1) * safeLimit, filtered.size());
+        int to = Math.min(from + safeLimit, filtered.size());
+        List<ProjectListingCardDto> cards = new ArrayList<>();
+        for (ProjectShortDetails project : filtered.subList(from, to)) {
+            cards.add(ProjectListingCardDto.fromShort(project));
+        }
+        if (!suggest) {
+            attachCardExtras(cards);
+        }
+        response.setProjects(cards);
+        return response;
+    }
+
+    private List<ProjectShortDetails> publicProjects() {
+        List<ProjectShortDetails> projects = projectRepository.findAllProjects();
+        if (projects == null || projects.isEmpty()) return List.of();
+        List<ProjectShortDetails> visible = new ArrayList<>();
+        for (ProjectShortDetails project : projects) {
+            if (!isHiddenPublicProject(project)) visible.add(project);
+        }
+        return visible;
+    }
+
+    private void attachCardExtras(List<ProjectListingCardDto> cards) {
+        if (cards == null || cards.isEmpty()) return;
+        List<Integer> ids = cards.stream().map(ProjectListingCardDto::getId).toList();
+        Map<Integer, List<String>> imagesByProject = new HashMap<>();
+        for (Object[] row : projectGalleryRepository.findImageNamesByProjectIds(ids)) {
+            if (row == null || row.length < 2 || row[0] == null || row[1] == null) continue;
+            int projectId = ((Number) row[0]).intValue();
+            String image = String.valueOf(row[1]).trim();
+            if (image.isEmpty()) continue;
+            imagesByProject.computeIfAbsent(projectId, ignored -> new ArrayList<>()).add(image);
+        }
+        Map<Integer, List<LocationBenefitDto>> benefitsByProject = new HashMap<>();
+        for (Object[] row : locationBenefitRepository.findCardBenefitsByProjectIds(ids)) {
+            if (row == null || row.length < 2 || row[0] == null || row[1] == null) continue;
+            int projectId = ((Number) row[0]).intValue();
+            String name = String.valueOf(row[1]).trim();
+            if (name.isEmpty()) continue;
+            String distance = row.length > 2 && row[2] != null ? String.valueOf(row[2]) : "";
+            benefitsByProject
+                    .computeIfAbsent(projectId, ignored -> new ArrayList<>())
+                    .add(new LocationBenefitDto(name, distance));
+        }
+        for (ProjectListingCardDto card : cards) {
+            card.setGalleryImageNames(imagesByProject.getOrDefault(card.getId(), List.of()));
+            card.setLocationBenefits(benefitsByProject.getOrDefault(card.getId(), List.of()));
+        }
+    }
+
+    private static boolean isHiddenPublicProject(ProjectShortDetails project) {
+        if (project == null) return true;
+        String slug = norm(project.getSlugURL());
+        String builderSlug = norm(project.getBuilderSlug());
+        String builder = norm(project.getBuilderName());
+        if (slug.startsWith("ashiana-")) return true;
+        if ("ashiana-housing".equals(builderSlug)) return true;
+        return "ashiana housing".equals(builder) || "ashiana".equals(builder) || builder.startsWith("ashiana");
+    }
+
+    private static boolean matchesListingContext(
+            ProjectShortDetails project,
+            String tab,
+            String city,
+            String budget,
+            String projectStatus
+    ) {
+        String typeNorm = norm(project.getPropertyTypeName());
+        String tabNorm = norm(tab);
+        if ("residential".equals(tabNorm) && !typeNorm.contains("residential")) return false;
+        if ("commercial".equals(tabNorm) && !typeNorm.contains("commercial")) return false;
+        if (!matchesCity(project, city)) return false;
+        if (!matchesBudget(project.getProjectPrice(), budget)) return false;
+        String statusFilter = norm(projectStatus);
+        if (!statusFilter.isEmpty() && !norm(project.getProjectStatusName()).contains(statusFilter)) return false;
+        return true;
+    }
+
+    private static boolean matchesCity(ProjectShortDetails project, String cityFilter) {
+        String filter = norm(cityFilter);
+        if (filter.isEmpty()) return true;
+        String city = norm(project.getCityName());
+        if ("noida".equals(filter) && (city.contains("noida extension") || city.contains("greater noida"))) {
+            return false;
+        }
+        List<String> names = switch (filter) {
+            case "gurugram", "gurgaon" -> List.of("gurugram", "gurgaon");
+            case "bangalore", "bengaluru" -> List.of("bangalore", "bengaluru");
+            case "delhi", "new delhi" -> List.of("delhi", "new delhi");
+            default -> List.of(filter);
+        };
+        return names.contains(city);
+    }
+
+    private static boolean matchesBudget(String rawPrice, String budget) {
+        String label = norm(budget).replace("*", "");
+        if (label.isEmpty()) return true;
+        Double crore = priceToCrore(rawPrice);
+        if (crore == null) return false;
+        if (label.contains("50") && (label.contains("under") || label.contains("upto") || label.contains("up to"))) {
+            return crore <= 0.5d;
+        }
+        if (label.contains("above") && label.contains("5")) return crore >= 5d;
+        if (label.contains("3") && label.contains("5")) return crore >= 3d && crore < 5d;
+        if (label.contains("1") && label.contains("3")) return crore >= 1d && crore < 3d;
+        if ((label.contains("up to") || label.contains("upto")) && label.contains("1")) return crore <= 1d;
+        return true;
+    }
+
+    private static final Pattern NUMBER_PATTERN = Pattern.compile("-?(?:\\d+\\.?\\d*|\\.\\d+)");
+
+    private static Double priceToCrore(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        String text = raw.replace(",", "").toLowerCase(Locale.ROOT);
+        Matcher matcher = NUMBER_PATTERN.matcher(text);
+        if (!matcher.find()) return null;
+        double value;
+        try {
+            value = Double.parseDouble(matcher.group());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+        if (text.contains("lakh") || text.contains("lac") || text.matches(".*\\d\\s*l(?:s)?(?:\\s|$).*")) {
+            return value / 100d;
+        }
+        if (text.contains("crore") || text.matches(".*\\bcr\\b.*")) return value;
+        if (value >= 100000d) return value / 10000000d;
+        return value;
+    }
+
+    private static boolean matchesBhk(String config, String wantedRaw) {
+        String wanted = wantedRaw == null ? "" : wantedRaw.trim();
+        if (wanted.isEmpty()) return true;
+        if (config == null || config.isBlank()) return false;
+        String c = config.toLowerCase(Locale.ROOT);
+        String w = wanted.toLowerCase(Locale.ROOT);
+        if (w.contains("rk")) return c.contains("rk") || c.contains("studio");
+        if (w.equals("villa")) return c.matches("(?s).*\\bvilla\\b.*");
+        if (w.equals("plot") || w.equals("plots")) return c.matches("(?s).*\\bplots?\\b.*");
+        if (w.matches("5\\+\\s*bhk")) {
+            Matcher matcher = Pattern.compile("(\\d+)\\s*bhk").matcher(c);
+            while (matcher.find()) {
+                if (Integer.parseInt(matcher.group(1)) >= 5) return true;
+            }
+            return false;
+        }
+        Matcher bhk = Pattern.compile("^(\\d+)\\s*bhk").matcher(w);
+        if (bhk.find()) {
+            return c.matches("(?s).*\\b" + bhk.group(1) + "\\s*bhk\\b.*");
+        }
+        return c.contains(w);
+    }
+
+    private static boolean matchesConfig(String config, String keyRaw) {
+        String key = keyRaw == null ? "" : keyRaw.trim().toLowerCase(Locale.ROOT);
+        if (key.isEmpty()) return true;
+        if (config == null || config.isBlank()) return false;
+        String c = config.toLowerCase(Locale.ROOT);
+        return switch (key) {
+            case "shops", "shop" -> c.matches("(?s).*\\bshops?\\b.*");
+            case "office" -> c.contains("office");
+            case "kiosk" -> c.contains("kiosk");
+            case "food-court", "food court" -> c.contains("food court");
+            case "restaurant" -> c.contains("restaurant");
+            case "showroom" -> c.contains("showroom");
+            case "sco-plots", "sco plots" -> c.contains("sco plot");
+            default -> c.contains(key.replace('-', ' '));
+        };
+    }
+
+    private static boolean matchesQuick(String statusNorm, String key) {
+        if (key == null || key.isBlank()) return true;
+        String status = statusNorm == null ? "" : statusNorm;
+        return switch (key) {
+            case "ready" -> status.contains("ready") || status.contains("completed");
+            case "new" -> status.contains("new launch") || status.contains("new launched");
+            case "under-construction" -> status.contains("under construction");
+            case "ultra-luxury" -> status.contains("ultra luxury");
+            default -> true;
+        };
+    }
+
+    private static boolean matchesQuery(ProjectShortDetails project, String query) {
+        String q = norm(query);
+        if (q.isEmpty()) return true;
+        String haystack = norm(String.join(" ",
+                safe(project.getProjectName()),
+                safe(project.getBuilderName()),
+                safe(project.getCityName()),
+                safe(project.getProjectLocality()),
+                safe(project.getProjectAddress()),
+                safe(project.getProjectConfiguration())
+        ));
+        for (String token : q.split(" ")) {
+            if (!token.isEmpty() && !haystack.contains(token)) return false;
+        }
+        return true;
+    }
+
+    private static void sortProjects(List<ProjectShortDetails> projects, String sort) {
+        String key = sort == null ? "" : sort.trim().toLowerCase(Locale.ROOT);
+        switch (key) {
+            case "price-low" -> projects.sort(Comparator.comparing(
+                    (ProjectShortDetails project) -> priceToCrore(project.getProjectPrice()),
+                    Comparator.nullsLast(Double::compareTo)));
+            case "price-high" -> projects.sort(Comparator.comparing(
+                    (ProjectShortDetails project) -> priceToCrore(project.getProjectPrice()),
+                    Comparator.nullsLast(Comparator.reverseOrder())));
+            case "newest" -> projects.sort(Comparator.comparing(
+                    ProjectShortDetails::getCreatedAt,
+                    Comparator.nullsLast(Comparator.reverseOrder())));
+            default -> {
+                // findAllProjects is already ordered by project name.
+            }
+        }
+    }
+
+    private static String norm(String value) {
+        if (value == null) return "";
+        return value.toLowerCase(Locale.ROOT).trim().replaceAll("\\s+", " ");
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value;
     }
 
     public List<ProjectShortDetails> getAllProjects() {
