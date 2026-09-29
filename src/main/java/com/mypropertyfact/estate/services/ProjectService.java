@@ -274,6 +274,7 @@ public class ProjectService {
                 if (bySlugURL.isPresent() && bySlugURL.get().getId() != (addUpdateProjectDto.getId())) {
                     throw new IllegalArgumentException("SlugURL already exists!");
                 }
+                moveProjectImageDir(project.getSlugURL(), addUpdateProjectDto.getSlugURL());
                 if (projectLogo != null && projectDir != null && !projectDir.isBlank()) {
                     fileUtils.deleteFileFromDestination(project.getProjectLogo(), projectDir);
                     if (!fileUtils.isValidAspectRatio(projectLogo.getInputStream(), 792, 203)) {
@@ -395,6 +396,28 @@ public class ProjectService {
             throw new RuntimeException(e);
         }
         return response;
+    }
+
+    /** Keep existing photos when the admin slug changes. */
+    private void moveProjectImageDir(String oldSlug, String newSlug) {
+        if (oldSlug == null || newSlug == null) {
+            return;
+        }
+        String from = oldSlug.trim();
+        String to = newSlug.trim();
+        if (from.isEmpty() || to.isEmpty() || from.equals(to)) {
+            return;
+        }
+        if (from.contains("..") || to.contains("..")
+                || from.contains("/") || to.contains("/")
+                || from.contains("\\") || to.contains("\\")) {
+            return;
+        }
+        File oldDir = new File(uploadDir + "properties/" + from);
+        File newDir = new File(uploadDir + "properties/" + to);
+        if (oldDir.isDirectory() && !newDir.exists() && !oldDir.renameTo(newDir)) {
+            log.warn("Could not move project images from {} to {}", from, to);
+        }
     }
 
     // Generating file name and saving it to upload directory

@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.MalformedURLException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -36,19 +37,54 @@ public class FetchImageController {
     @GetMapping("/properties/{projectname}/{filename}")
     public ResponseEntity<Resource> getImage(@PathVariable String filename, @PathVariable String projectname) {
         try {
-            Path imagePath = Paths.get(uploadDir, projectname + "/" + filename);
-            Resource resource = new UrlResource(imagePath.toUri());
-
-            if (resource.exists()) {
-                return ResponseEntity.ok()
-                        .contentType(MediaType.IMAGE_JPEG) // or determine the correct type dynamically
-                        .body(resource);
-            } else {
+            if (hasPathTraversal(projectname) || hasPathTraversal(filename)) {
+                return ResponseEntity.badRequest().build();
+            }
+            Path imagePath = resolvePropertyImage(projectname, filename);
+            if (imagePath == null) {
                 return ResponseEntity.notFound().build();
             }
+            Resource resource = new UrlResource(imagePath.toUri());
+            if (resource.exists()) {
+                return ResponseEntity.ok()
+                        .contentType(MediaType.IMAGE_JPEG)
+                        .body(resource);
+            }
+            return ResponseEntity.notFound().build();
         } catch (MalformedURLException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
+    }
+
+    /**
+     * After an admin slug change, files can still sit in the previous folder
+     * (for example eldeco-echoes-of-eden-22d → eldeco-echoes-of-eden).
+     */
+    private Path resolvePropertyImage(String projectname, String filename) {
+        Path direct = Paths.get(uploadDir, projectname, filename);
+        if (Files.exists(direct)) {
+            return direct;
+        }
+        String candidate = projectname;
+        while (candidate.contains("-")) {
+            candidate = candidate.substring(0, candidate.lastIndexOf('-'));
+            if (candidate.isBlank()) {
+                break;
+            }
+            Path alternate = Paths.get(uploadDir, candidate, filename);
+            if (Files.exists(alternate)) {
+                return alternate;
+            }
+        }
+        return null;
+    }
+
+    private static boolean hasPathTraversal(String value) {
+        return value == null
+                || value.isBlank()
+                || value.contains("..")
+                || value.contains("/")
+                || value.contains("\\");
     }
 
     @GetMapping("/amenity/{filename}")
