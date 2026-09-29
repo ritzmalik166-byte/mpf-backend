@@ -2,6 +2,7 @@ package com.mypropertyfact.estate.controllers;
 
 import com.mypropertyfact.estate.dtos.AddUpdateProjectDto;
 import com.mypropertyfact.estate.dtos.ProjectExportDto;
+import com.mypropertyfact.estate.dtos.ProjectCardPageResponse;
 import com.mypropertyfact.estate.dtos.ProjectShortDetails;
 import com.mypropertyfact.estate.models.ProjectAmenityDto;
 import com.mypropertyfact.estate.models.Response;
@@ -97,12 +98,72 @@ public class ProjectController {
         return ResponseEntity.ok(projectService.getAllFloorTypes());
     }
 
+    /**
+     * Legacy slice: {@code page} is 0-based and {@code size} is the page length.
+     * Listing cards: {@code page=1&limit=10} (1-based) returns one page of card fields.
+     */
     @GetMapping("/get-projects-in-parts")
-    public ResponseEntity<List<ProjectShortDetails>> getProjectInParts(
-            @RequestParam("page") Integer page,
-            @RequestParam("size") Integer size
+    public ResponseEntity<?> getProjectInParts(
+            @RequestParam(value = "page", required = false) Integer page,
+            @RequestParam(value = "size", required = false) Integer size,
+            @RequestParam(value = "limit", required = false) Integer limit,
+            @RequestParam(value = "tab", required = false) String tab,
+            @RequestParam(value = "city", required = false) String city,
+            @RequestParam(value = "budget", required = false) String budget,
+            @RequestParam(value = "projectStatus", required = false) String projectStatus,
+            @RequestParam(value = "bhkType", required = false) String bhkType,
+            @RequestParam(value = "configType", required = false) String configType,
+            @RequestParam(value = "quick", required = false) String quick,
+            @RequestParam(value = "sort", required = false) String sort,
+            @RequestParam(value = "q", required = false) String query,
+            @RequestParam(value = "projectId", required = false) Integer projectId,
+            @RequestParam(value = "slug", required = false) String slug,
+            @RequestParam(value = "suggest", defaultValue = "false") boolean suggest
     ) {
-        return ResponseEntity.ok(projectService.getProjectInParts(page, size));
+        boolean listingRequest = limit != null || suggest || hasListingFilter(
+                tab, city, budget, projectStatus, bhkType, configType, quick, sort, query, projectId, slug);
+        if (!listingRequest) {
+            return ResponseEntity.ok(projectService.getProjectInParts(page == null ? 0 : page, size));
+        }
+        ProjectCardPageResponse body = projectService.getProjectListingPage(
+                page,
+                limit != null ? limit : size,
+                tab,
+                city,
+                budget,
+                projectStatus,
+                bhkType,
+                configType,
+                quick,
+                sort,
+                query,
+                projectId,
+                slug,
+                suggest
+        );
+        return ResponseEntity.ok(body);
+    }
+
+    private static boolean hasListingFilter(
+            String tab,
+            String city,
+            String budget,
+            String projectStatus,
+            String bhkType,
+            String configType,
+            String quick,
+            String sort,
+            String query,
+            Integer projectId,
+            String slug
+    ) {
+        return isPresent(tab) || isPresent(city) || isPresent(budget) || isPresent(projectStatus)
+                || isPresent(bhkType) || isPresent(configType) || isPresent(quick) || isPresent(sort)
+                || isPresent(query) || (projectId != null && projectId > 0) || isPresent(slug);
+    }
+
+    private static boolean isPresent(String value) {
+        return value != null && !value.isBlank();
     }
 
     @GetMapping("/get-by-slug/{slug}")
