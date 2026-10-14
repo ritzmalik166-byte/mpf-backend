@@ -1,6 +1,9 @@
 package com.mypropertyfact.estate.services;
 
 import com.mypropertyfact.estate.dtos.ProjectListingActivityDto;
+import com.mypropertyfact.estate.dtos.ProjectListingAverageResponse;
+import com.mypropertyfact.estate.dtos.ProjectListingAverageRowDto;
+import com.mypropertyfact.estate.dtos.ProjectListingAverageSummaryDto;
 import com.mypropertyfact.estate.dtos.ProjectListingDetailDto;
 import com.mypropertyfact.estate.dtos.ProjectListingFilterOptionsDto;
 import com.mypropertyfact.estate.dtos.ProjectListingPageResponse;
@@ -28,11 +31,15 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 @Service
@@ -40,6 +47,8 @@ import java.util.Set;
 public class ProjectListingActivityService {
 
     private static final int MAX_FETCH = 5000;
+    private static final int DEFAULT_AVERAGE_DAYS = 30;
+    private static final double AVG_DAYS_PER_MONTH = 30.4375;
     private static final DateTimeFormatter DATE_FMT =
             DateTimeFormatter.ofPattern("d MMM yyyy", Locale.UK);
     private static final DateTimeFormatter DATE_LONG_FMT =
@@ -84,24 +93,7 @@ public class ProjectListingActivityService {
             rangeEnd = swap;
         }
 
-        LocalDateTime from = rangeStart.atStartOfDay();
-        LocalDateTime to = rangeEnd.plusDays(1).atStartOfDay();
-
-        List<ProjectListingRowDto> rows = new ArrayList<>();
-        String type = blankToNull(listingType);
-        if (type == null || "ALL".equalsIgnoreCase(type) || "NORMAL".equalsIgnoreCase(type)
-                || "PROJECT".equalsIgnoreCase(type)) {
-            for (Project project : projectRepository.findListedBetween(from, to)) {
-                rows.add(toProjectRow(project));
-            }
-        }
-        if (type == null || "ALL".equalsIgnoreCase(type) || "PORTAL".equalsIgnoreCase(type)
-                || "BROKER".equalsIgnoreCase(type) || "PORTAL_BROKER".equalsIgnoreCase(type)) {
-            for (PropertyListing listing : propertyListingRepository.findListedBetween(from, to)) {
-                rows.add(toPortalRow(listing));
-            }
-        }
-
+        List<ProjectListingRowDto> rows = collectRows(rangeStart, rangeEnd, listingType);
         boolean truncated = rows.size() >= MAX_FETCH;
         if (truncated) {
             rows = new ArrayList<>(rows.subList(0, MAX_FETCH));
@@ -146,6 +138,190 @@ public class ProjectListingActivityService {
                 safePage,
                 safeSize,
                 LocalDateTime.now(zone));
+    }
+
+    /**
+     * Per-person listing averages for a date range (defaults to the last 30 days, inclusive of today).
+     * Averages are spread over every calendar day in the range, not only the days a person listed.
+     */
+    @Transactional(readOnly = true)
+    public ProjectListingAverageResponse averages(
+            String dateFrom,
+            String dateTo,
+            String listingType,
+            String userRole,
+            String q) {
+        ZoneId zone = ZoneId.systemDefault();
+        LocalDate today = LocalDate.now(zone);
+        LocalDate rangeEnd = parseDateOr(dateTo, today);
+        LocalDate rangeStart = parseDateOr(dateFrom, rangeEnd.minusDays(DEFAULT_AVERAGE_DAYS - 1));
+        if (rangeEnd.isBefore(rangeStart)) {
+            LocalDate swap = rangeStart;
+            rangeStart = rangeEnd;
+            rangeEnd = swap;
+        }
+        long days = ChronoUnit.DAYS.between(rangeStart, rangeEnd) + 1;
+
+        List<ProjectListingRowDto> rows = collectRows(rangeStart, rangeEnd, listingType);
+        boolean truncated = rows.size() >= MAX_FETCH;
+        if (truncated) {
+            rows = new ArrayList<>(rows.subList(0, MAX_FETCH));
+        }
+
+        Map<String, List<ProjectListingRowDto>> byPerson = new LinkedHashMap<>();
+        for (ProjectListingRowDto row : rows) {
+            if (hasText(userRole) && !"ALL".equalsIgnoreCase(userRole) && !roleMatches(row.userRole(), userRole)) {
+                continue;
+            }
+            byPerson.computeIfAbsent(personKey(row), k -> new ArrayList<>()).add(row);
+        }
+
+        long grandTotal = byPerson.values().stream().mapToLong(List::size).sum();
+        List<ProjectListingAverageRowDto> people = new ArrayList<>();
+        for (Map.Entry<String, List<ProjectListingRowDto>> entry : byPerson.entrySet()) {
+            ProjectListingAverageRowDto person = toAverageRow(entry.getKey(), entry.getValue(), days, grandTotal);
+            if (hasText(q)
+                    && !contains(person.name(), q)
+                    && !contains(person.email(), q)
+                    && !contains(person.userRole(), q)) {
+                continue;
+            }
+            people.add(person);
+        }
+        people.sort(Comparator
+                .comparingLong(ProjectListingAverageRowDto::totalListings).reversed()
+                .thenComparing(p -> p.name() == null ? "" : p.name(), String.CASE_INSENSITIVE_ORDER));
+
+        long total = people.stream().mapToLong(ProjectListingAverageRowDto::totalListings).sum();
+        long contributors = people.size();
+        ProjectListingAverageRowDto top = people.isEmpty() ? null : people.get(0);
+        ProjectListingAverageSummaryDto summary = new ProjectListingAverageSummaryDto(
+                total,
+                contributors,
+                round2(contributors == 0 ? 0 : total / (double) contributors),
+                round2(total / (double) days),
+                round2(contributors == 0 ? 0 : total / (double) contributors / days),
+                top != null ? top.name() : null,
+                top != null ? top.totalListings() : 0);
+
+        return new ProjectListingAverageResponse(
+                rangeStart.toString(),
+                rangeEnd.toString(),
+                days,
+                zone.getId(),
+                truncated,
+                summary,
+                people,
+                LocalDateTime.now(zone));
+    }
+
+    private List<ProjectListingRowDto> collectRows(LocalDate rangeStart, LocalDate rangeEnd, String listingType) {
+        LocalDateTime from = rangeStart.atStartOfDay();
+        LocalDateTime to = rangeEnd.plusDays(1).atStartOfDay();
+
+        List<ProjectListingRowDto> rows = new ArrayList<>();
+        String type = blankToNull(listingType);
+        if (type == null || "ALL".equalsIgnoreCase(type) || "NORMAL".equalsIgnoreCase(type)
+                || "PROJECT".equalsIgnoreCase(type)) {
+            for (Project project : projectRepository.findListedBetween(from, to)) {
+                rows.add(toProjectRow(project));
+            }
+        }
+        if (type == null || "ALL".equalsIgnoreCase(type) || "PORTAL".equalsIgnoreCase(type)
+                || "BROKER".equalsIgnoreCase(type) || "PORTAL_BROKER".equalsIgnoreCase(type)) {
+            for (PropertyListing listing : propertyListingRepository.findListedBetween(from, to)) {
+                rows.add(toPortalRow(listing));
+            }
+        }
+        return rows;
+    }
+
+    private static String personKey(ProjectListingRowDto row) {
+        if (row.userId() != null) {
+            return "U:" + row.userId();
+        }
+        if (hasText(row.userEmail())) {
+            return "E:" + row.userEmail().trim().toLowerCase(Locale.ROOT);
+        }
+        return "N:" + firstNonBlank(row.listedBy(), "Unknown").toLowerCase(Locale.ROOT);
+    }
+
+    private ProjectListingAverageRowDto toAverageRow(
+            String key,
+            List<ProjectListingRowDto> listings,
+            long days,
+            long grandTotal) {
+        long normal = 0;
+        long portal = 0;
+        long active = 0;
+        long pending = 0;
+        long rejected = 0;
+        Set<LocalDate> activeDays = new HashSet<>();
+        LocalDateTime first = null;
+        LocalDateTime last = null;
+        String name = null;
+        String email = null;
+        String role = null;
+        Integer userId = null;
+        for (ProjectListingRowDto row : listings) {
+            if ("PROJECT".equals(row.source())) {
+                normal += 1;
+            } else {
+                portal += 1;
+            }
+            String status = row.statusKey() == null ? "" : row.statusKey();
+            if ("ACTIVE".equals(status) || "SOLD".equals(status)) {
+                active += 1;
+            } else if ("PENDING".equals(status)) {
+                pending += 1;
+            } else if ("REJECTED".equals(status)) {
+                rejected += 1;
+            }
+            LocalDateTime at = row.createdAt();
+            if (at != null) {
+                activeDays.add(at.toLocalDate());
+                if (first == null || at.isBefore(first)) {
+                    first = at;
+                }
+                if (last == null || at.isAfter(last)) {
+                    last = at;
+                }
+            }
+            name = firstNonBlank(name, row.listedBy());
+            email = firstNonBlank(email, row.userEmail());
+            role = firstNonBlank(role, row.userRole());
+            userId = userId != null ? userId : row.userId();
+        }
+        long total = listings.size();
+        return new ProjectListingAverageRowDto(
+                key,
+                userId,
+                firstNonBlank(name, email, "Unknown"),
+                email,
+                role,
+                total,
+                normal,
+                portal,
+                active,
+                pending,
+                rejected,
+                activeDays.size(),
+                round2(total / (double) days),
+                round2(activeDays.isEmpty() ? 0 : total / (double) activeDays.size()),
+                round2(total / (days / 7.0)),
+                round2(total / (days / AVG_DAYS_PER_MONTH)),
+                round2(grandTotal == 0 ? 0 : total * 100.0 / grandTotal),
+                first,
+                last,
+                formatDate(first),
+                formatDate(last));
+    }
+
+    private static double round2(double value) {
+        if (Double.isNaN(value) || Double.isInfinite(value)) {
+            return 0;
+        }
+        return Math.round(value * 100.0) / 100.0;
     }
 
     @Transactional(readOnly = true)

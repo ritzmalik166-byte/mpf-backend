@@ -11,6 +11,7 @@ import com.mypropertyfact.estate.dtos.SuperAdminNotificationsResponse;
 import com.mypropertyfact.estate.dtos.TrafficRevealRequest;
 import com.mypropertyfact.estate.dtos.LiveListingsResponse;
 import com.mypropertyfact.estate.dtos.PortalListingStatsResponse;
+import com.mypropertyfact.estate.dtos.ProjectListingAverageResponse;
 import com.mypropertyfact.estate.dtos.ProjectListingDetailDto;
 import com.mypropertyfact.estate.dtos.ProjectListingFilterOptionsDto;
 import com.mypropertyfact.estate.dtos.ProjectListingPageResponse;
@@ -239,6 +240,16 @@ public class SuperAdminTrackingController {
                 userRole,
                 page,
                 size));
+    }
+
+    @GetMapping("/project-listings/averages")
+    public ResponseEntity<ProjectListingAverageResponse> projectListingAverages(
+            @RequestParam(required = false) String dateFrom,
+            @RequestParam(required = false) String dateTo,
+            @RequestParam(required = false) String listingType,
+            @RequestParam(required = false) String userRole,
+            @RequestParam(required = false) String q) {
+        return ResponseEntity.ok(projectListingActivityService.averages(dateFrom, dateTo, listingType, userRole, q));
     }
 
     @GetMapping("/project-listings/filter-options")

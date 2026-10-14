@@ -156,6 +156,9 @@ public final class AdminApiTaskDescriber {
         if (path.contains("/api/v1/admin/super/live-listings")) {
             return "View live website and portal listings";
         }
+        if (path.contains("/api/v1/admin/super/project-listings/averages")) {
+            return "View average project listings per person";
+        }
         if (path.contains("/api/v1/admin/super/project-listings")) {
             if (HttpMethod.DELETE.matches(method)) {
                 return "Delete project listing from activity dashboard";
