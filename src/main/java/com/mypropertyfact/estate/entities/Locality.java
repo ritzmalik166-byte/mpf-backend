@@ -1,5 +1,6 @@
 package com.mypropertyfact.estate.entities;
 
+import com.mypropertyfact.estate.config.CatalogCacheEvictionListener;
 import jakarta.persistence.*;
 import lombok.Data;
 import lombok.ToString;
@@ -15,6 +16,7 @@ import java.time.LocalDateTime;
 })
 @Entity
 @ToString(exclude = {"city", "zone", "projectTypes"})
+@EntityListeners(CatalogCacheEvictionListener.class)
 public class Locality {
 
     @Id

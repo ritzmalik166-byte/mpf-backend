@@ -113,6 +113,62 @@ public interface PropertyListingRepository extends JpaRepository<PropertyListing
     List<PropertyShortDetailsDto> getPropertyShortDetails(@Param("status") ProjectApprovalStatus status);
 
     @Query("""
+            SELECT new com.mypropertyfact.estate.dtos.PropertyShortDetailsDto(
+                pl.id,
+                pl.listingType,
+                pl.transaction,
+                pl.subType,
+                pl.status,
+                pl.projectName,
+                pl.builderName,
+                pl.address,
+                pl.localityName,
+                c.name,
+                pl.pincode,
+                pl.carpetArea,
+                pl.builtUpArea,
+                pl.totalPrice,
+                pl.pricePerSqft,
+                pl.bathrooms,
+                pl.bedrooms,
+                pl.facing,
+                pl.createdAt
+            )
+            FROM PropertyListing pl
+            JOIN pl.city c
+            WHERE pl.approvalStatus = :approval
+              AND (:city IS NULL OR LOWER(c.name) = :city OR LOWER(c.slugUrl) = :city)
+              AND (:listingType IS NULL OR LOWER(pl.listingType) = :listingType)
+              AND (:transaction IS NULL OR LOWER(pl.transaction) = :transaction)
+              AND (:subType IS NULL OR LOWER(pl.subType) = :subType)
+              AND (:listingStatus IS NULL OR LOWER(pl.status) = :listingStatus)
+              AND (:bedrooms IS NULL OR pl.bedrooms = :bedrooms)
+              AND (:minPrice IS NULL OR pl.totalPrice >= :minPrice)
+              AND (:maxPrice IS NULL OR pl.totalPrice <= :maxPrice)
+            ORDER BY pl.createdAt DESC
+            """)
+    List<PropertyShortDetailsDto> findApprovedShortDetails(
+            @Param("approval") ProjectApprovalStatus approval,
+            @Param("city") String city,
+            @Param("listingType") String listingType,
+            @Param("transaction") String transaction,
+            @Param("subType") String subType,
+            @Param("listingStatus") String listingStatus,
+            @Param("bedrooms") Integer bedrooms,
+            @Param("minPrice") Double minPrice,
+            @Param("maxPrice") Double maxPrice,
+            org.springframework.data.domain.Pageable pageable);
+
+    /** Rows of [propertyListingId, imageUrl] in display order. */
+    @Query("""
+            SELECT pi.propertyListing.id, pi.imageUrl
+            FROM PropertyListingImage pi
+            WHERE pi.propertyListing.id IN :ids
+            ORDER BY pi.propertyListing.id, pi.displayOrder ASC
+            """)
+    List<Object[]> findImageUrlsByListingIds(@Param("ids") java.util.Collection<Long> ids);
+
+    @Query("""
             SELECT new com.mypropertyfact.estate.dtos.PropertyListingImagesDto(
                 pi.id,
                 pi.imageUrl,

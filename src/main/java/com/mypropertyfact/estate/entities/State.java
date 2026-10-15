@@ -1,6 +1,7 @@
 package com.mypropertyfact.estate.entities;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.mypropertyfact.estate.config.CatalogCacheEvictionListener;
 import jakarta.persistence.*;
 import lombok.Data;
 import lombok.ToString;
@@ -12,6 +13,7 @@ import java.util.List;
 @Data
 @Table(name = "state")
 @ToString(exclude = {"country"})
+@EntityListeners(CatalogCacheEvictionListener.class)
 public class State {
 
     @Id

@@ -27,6 +27,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -226,50 +227,33 @@ public class BlogServiceImpl implements BlogService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public Page<BlogDto> getWithPagination(int page, int size, String from, String search) {
-        // Public listing: active blogs only (status = 1)
-        List<Blog> allBlogs = blogRepository.findAll(Sort.by(Sort.Direction.DESC, "createdAt"))
-                .stream()
-                .filter(blog -> BlogStatus.isPubliclyVisible(blog.getStatus()))
-                .toList();
+        PageRequest pageRequest = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 500));
+        boolean marketOnly = !"blog".equalsIgnoreCase(from);
+        String trimmed = search == null ? "" : search.trim().toLowerCase(Locale.ROOT);
+        String pattern = trimmed.isEmpty()
+                ? null
+                : "%" + trimmed.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
 
-        // Step 2: Map to DTOs
-        List<BlogDto> dtoList = allBlogs.stream().map(blog -> {
+        Page<Object[]> rows = blogRepository.findPublicCards(BlogStatus.PUBLISHED, marketOnly, pattern, pageRequest);
+        List<BlogDto> cards = rows.getContent().stream().map(row -> {
             BlogDto blogDto = new BlogDto();
-            blogDto.setBlogImage(blog.getBlogImage());
-            blogDto.setCityName(blog.getCity() != null ? blog.getCity().getName() : null);
-            blogDto.setCityId(blog.getCity() != null ? blog.getCity().getId() : 0);
-            blogDto.setBlogCategory(blog.getBlogCategory() != null ? blog.getBlogCategory().getCategoryName() : null);
-            blogDto.setCategoryId(blog.getBlogCategory() != null ? blog.getBlogCategory().getId() : 0);
-            blogDto.setSlugUrl(blog.getSlugUrl());
-            blogDto.setCreatedAt(blog.getCreatedAt());
-            blogDto.setBlogTitle(blog.getBlogTitle());
-            blogDto.setBlogMetaDescription(blog.getBlogMetaDescription());
-            blogDto.setAuthorName(blog.getAuthorName());
+            blogDto.setId(row[0] == null ? 0 : ((Number) row[0]).intValue());
+            blogDto.setBlogTitle((String) row[1]);
+            blogDto.setBlogMetaDescription((String) row[2]);
+            blogDto.setSlugUrl((String) row[3]);
+            blogDto.setBlogImage((String) row[4]);
+            blogDto.setAuthorName((String) row[5]);
+            blogDto.setBlogCategory((String) row[6]);
+            blogDto.setCategoryId(row[7] == null ? 0 : ((Number) row[7]).intValue());
+            blogDto.setCityId(row[8] == null ? 0 : ((Number) row[8]).intValue());
+            blogDto.setCityName((String) row[9]);
+            blogDto.setCreatedAt((LocalDateTime) row[10]);
+            blogDto.setStatus(row[11] == null ? 0 : ((Number) row[11]).intValue());
             return blogDto;
         }).toList();
-
-        // Step 3: Filter based on "from" and "search"
-        List<BlogDto> filteredList;
-        if ("blog".equalsIgnoreCase(from)) {
-            filteredList = dtoList.stream()
-                    .filter(blog -> blog.getCategoryId() != 5)
-                    .toList();
-        } else {
-            filteredList = dtoList.stream()
-                    .filter(blog -> blog.getCategoryId() == 5)
-                    .toList();
-        }
-        // Step 4: Manual pagination on the filtered list
-        int start = Math.min(page * size, filteredList.size());
-        int end = Math.min(start + size, filteredList.size());
-        List<BlogDto> pagedList = filteredList.subList(start, end);
-        if (search != null && !search.isEmpty()) {
-            return new PageImpl<>(filteredList, PageRequest.of(page, size), filteredList.size());
-        }
-
-        // Step 5: Return as Page<BlogDto>
-        return new PageImpl<>(pagedList, PageRequest.of(page, size), filteredList.size());
+        return new PageImpl<>(cards, pageRequest, rows.getTotalElements());
     }
 
 

@@ -1,6 +1,7 @@
 package com.mypropertyfact.estate.entities;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.mypropertyfact.estate.config.CatalogCacheEvictionListener;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
@@ -45,6 +46,7 @@ import java.util.Set;
         "projectBanners", "floorPlans", "amenities", "projectsAbouts",
         "projectWalkthroughs", "locationBenefits", "projectGalleries", "projectFaqs"
 })
+@EntityListeners(CatalogCacheEvictionListener.class)
 public class Project {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

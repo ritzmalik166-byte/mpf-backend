@@ -18,6 +18,11 @@ import java.util.Optional;
 @Repository
 public interface ProjectRepository extends JpaRepository<Project, Integer> {
 
+    /** Rows of [projectId, projectName]. */
+    @Query("SELECT p.id, p.projectName FROM Project p WHERE p.id IN :ids")
+    List<Object[]> findNamesByIds(@Param("ids") java.util.Collection<Integer> ids);
+
+
     Optional<Project> findBySlugURL(String url);
 
     Optional<Project> findFirstByProjectNameIgnoreCase(String projectName);

@@ -22,6 +22,8 @@ public class ProjectTypesService {
     private final ProjectTypeRepository projectTypeRepository;
     
     private final ProjectRepository projectRepository;
+    
+    private final ProjectCatalogService projectCatalogService;
 
     public List<ProjectTypeView> getAllProjectTypes() {
         return this.projectTypeRepository.findAllProjectedBy(Sort.by(Sort.Direction.ASC, "projectTypeName"));
@@ -82,7 +84,7 @@ public class ProjectTypesService {
     public ProjectTypeDto getBySlug(String url) {
         ProjectTypeDto projectTypeDetailDto = new ProjectTypeDto();
         Optional<ProjectTypes> projectTypeData = this.projectTypeRepository.findBySlugUrl(url);
-        List<ProjectShortDetails> projectDetailDtoList = projectRepository.findAllProjects();
+        List<ProjectShortDetails> projectDetailDtoList = projectCatalogService.findAllProjects();
             projectTypeData.ifPresent(projectType -> {
             projectTypeDetailDto.setId(projectType.getId());
             projectTypeDetailDto.setProjectTypeName(projectType.getProjectTypeName());

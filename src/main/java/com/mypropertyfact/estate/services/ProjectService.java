@@ -29,6 +29,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ProjectService {
     private final ProjectRepository projectRepository;
+    private final ProjectCatalogService projectCatalogService;
     private final AmenityRepository amenityRepository;
     private final CityRepository cityRepository;
     private final StateRepository stateRepository;
@@ -536,7 +537,7 @@ public class ProjectService {
     }
 
     public Set<String> getAllFloorTypes() {
-        List<ProjectShortDetails> projects = projectRepository.findAllProjects();
+        List<ProjectShortDetails> projects = projectCatalogService.findAllProjects();
         return projects
                 .stream()
                 .map(ProjectShortDetails::getProjectConfiguration)
@@ -548,7 +549,7 @@ public class ProjectService {
 
     @Transactional
     public List<ProjectShortDetails> getProjectInParts(Integer page, Integer size) {
-        List<ProjectShortDetails> allProjects = projectRepository.findAllProjects();
+        List<ProjectShortDetails> allProjects = projectCatalogService.findAllProjects();
         if (allProjects == null || allProjects.isEmpty()) return List.of();
         int safePage = page == null || page < 0 ? 0 : page;
         int safeSize = size == null || size < 1 ? 10 : size;
@@ -582,7 +583,7 @@ public class ProjectService {
             boolean suggest
     ) {
         int safeLimit = suggest
-                ? Math.min(Math.max(limit == null ? 8 : limit, 1), 8)
+                ? Math.min(Math.max(limit == null ? 8 : limit, 1), 24)
                 : Math.min(Math.max(limit == null ? 10 : limit, 1), 24);
         int safePage = page == null || page < 1 ? 1 : page;
 
@@ -627,7 +628,18 @@ public class ProjectService {
             filtered.add(project);
         }
 
-        sortProjects(filtered, sort);
+        if (suggest && filtered.isEmpty() && !norm(query).isEmpty()) {
+            for (ProjectShortDetails project : context) {
+                if (!matchesQuick(norm(project.getProjectStatusName()), quick)) continue;
+                if (fuzzyMatchesQuery(project, query)) filtered.add(project);
+            }
+        }
+
+        if (suggest && (sort == null || sort.isBlank())) {
+            rankSuggestions(filtered, query);
+        } else {
+            sortProjects(filtered, sort);
+        }
 
         ProjectCardPageResponse response = new ProjectCardPageResponse();
         response.setPage(suggest ? 1 : safePage);
@@ -650,7 +662,7 @@ public class ProjectService {
     }
 
     private List<ProjectShortDetails> publicProjects() {
-        List<ProjectShortDetails> projects = projectRepository.findAllProjects();
+        List<ProjectShortDetails> projects = projectCatalogService.findAllProjects();
         if (projects == null || projects.isEmpty()) return List.of();
         List<ProjectShortDetails> visible = new ArrayList<>();
         for (ProjectShortDetails project : projects) {
@@ -831,9 +843,85 @@ public class ProjectService {
                 safe(project.getProjectConfiguration())
         ));
         for (String token : q.split(" ")) {
-            if (!token.isEmpty() && !haystack.contains(token)) return false;
+            if (token.isEmpty() || haystack.contains(token)) continue;
+            String alias = QUERY_TOKEN_ALIASES.get(token);
+            if (alias == null || !haystack.contains(alias)) return false;
         }
         return true;
+    }
+
+    private static final Map<String, String> QUERY_TOKEN_ALIASES = Map.of(
+            "gurgaon", "gurugram",
+            "gurugram", "gurgaon",
+            "bangalore", "bengaluru",
+            "bengaluru", "bangalore",
+            "bombay", "mumbai"
+    );
+
+    /** Typo-tolerant match: every query token (3+ chars) is within one edit of a word in the name, builder, city or locality. */
+    private static boolean fuzzyMatchesQuery(ProjectShortDetails project, String query) {
+        String q = norm(query);
+        if (q.length() < 3) return false;
+        String[] words = norm(String.join(" ",
+                safe(project.getProjectName()),
+                safe(project.getBuilderName()),
+                safe(project.getCityName()),
+                safe(project.getProjectLocality())
+        )).split("[^a-z0-9]+");
+        for (String token : q.split(" ")) {
+            if (token.length() < 3) continue;
+            boolean found = false;
+            for (String word : words) {
+                if (word.isEmpty()) continue;
+                if (word.startsWith(token) || withinOneEdit(token, word)
+                        || (word.length() > token.length() && withinOneEdit(token, word.substring(0, token.length())))) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+
+    private static boolean withinOneEdit(String a, String b) {
+        int la = a.length();
+        int lb = b.length();
+        if (Math.abs(la - lb) > 1) return false;
+        int i = 0;
+        int j = 0;
+        int edits = 0;
+        while (i < la && j < lb) {
+            if (a.charAt(i) == b.charAt(j)) {
+                i++;
+                j++;
+                continue;
+            }
+            if (++edits > 1) return false;
+            if (la > lb) i++;
+            else if (lb > la) j++;
+            else {
+                i++;
+                j++;
+            }
+        }
+        return edits + (la - i) + (lb - j) <= 1;
+    }
+
+    /** Name prefix matches first, then name matches, then builder / city / locality matches. Stable within a tier. */
+    private static void rankSuggestions(List<ProjectShortDetails> projects, String query) {
+        String q = norm(query);
+        if (q.isEmpty() || projects.size() < 2) return;
+        projects.sort(Comparator.comparingInt((ProjectShortDetails project) -> {
+            String name = norm(project.getProjectName());
+            if (name.equals(q)) return 0;
+            if (name.startsWith(q)) return 1;
+            if (name.contains(" " + q) || name.contains(q)) return 2;
+            if (norm(project.getBuilderName()).contains(q)) return 3;
+            if (norm(project.getProjectLocality()).contains(q)) return 4;
+            if (norm(project.getCityName()).contains(q)) return 5;
+            return 6;
+        }));
     }
 
     private static void sortProjects(List<ProjectShortDetails> projects, String sort) {
@@ -864,7 +952,7 @@ public class ProjectService {
     }
 
     public List<ProjectShortDetails> getAllProjects() {
-        return projectRepository.findAllProjects();
+        return projectCatalogService.findAllProjects();
     }
 
     @Transactional(readOnly = true)

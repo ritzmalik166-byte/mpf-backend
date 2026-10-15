@@ -1,6 +1,7 @@
 package com.mypropertyfact.estate.services;
 
 import com.mypropertyfact.estate.ConstantMessages;
+import com.mypropertyfact.estate.config.CacheNames;
 import com.mypropertyfact.estate.common.CommonMapper;
 import com.mypropertyfact.estate.common.FileUtils;
 import com.mypropertyfact.estate.dtos.*;
@@ -8,13 +9,13 @@ import com.mypropertyfact.estate.entities.*;
 import com.mypropertyfact.estate.models.Response;
 import com.mypropertyfact.estate.repositories.CityRepository;
 import com.mypropertyfact.estate.repositories.LocalityRepository;
-import com.mypropertyfact.estate.repositories.ProjectRepository;
 import com.mypropertyfact.estate.repositories.StateRepository;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -38,20 +39,35 @@ public class CityService {
     private final StateRepository stateRepository;
     private final CommonMapper commonMapper;
     private final FileUtils fileUtils;
-    private final ProjectRepository projectRepository;
+    private final ProjectCatalogService projectCatalogService;
     private final LocalityRepository localityRepository;
 
     @Value("${upload_dir}")
     private String uploadDir;
 
-    @Transactional
+    @Cacheable(CacheNames.CITY_ALL)
+    @Transactional(readOnly = true)
     public List<CityDetailDto> getAllCities() {
         List<CityDetailDto> allCities = cityRepository.findAllCities();
+        Map<Integer, List<LocalityShortDto>> localitiesByCity = new HashMap<>();
+        for (Object[] row : localityRepository.findAllLocalityRowsWithCityId()) {
+            if (row == null || row.length < 3 || row[0] == null) continue;
+            int cityId = ((Number) row[0]).intValue();
+            Long localityId = row[1] == null ? null : ((Number) row[1]).longValue();
+            localitiesByCity
+                    .computeIfAbsent(cityId, ignored -> new ArrayList<>())
+                    .add(new LocalityShortDto(localityId, (String) row[2]));
+        }
         return allCities.stream().map(city -> {
-            List<LocalityShortDto> allLocalitiesOfCity = localityRepository.findAllLocalitiesOfCity(city.getId());
-            city.setLocalities(allLocalitiesOfCity);
+            city.setLocalities(localitiesByCity.getOrDefault(city.getId(), new ArrayList<>()));
             return city;
         }).toList();
+    }
+
+    @Cacheable(CacheNames.CITY_NAV)
+    @Transactional(readOnly = true)
+    public List<CityNavDto> getCityNav() {
+        return List.copyOf(cityRepository.findAllCityNav());
     }
 
     public Response postNewCity(CityDto cityDto) {
@@ -158,7 +174,7 @@ public class CityService {
         }
         List<LocalityShortDto> allLocalitiesOfCity = localityRepository.findAllLocalitiesOfCity(dbCity.getId());
         dbCity.setLocalities(allLocalitiesOfCity);
-        List<ProjectShortDetails> allProjects = projectRepository.findAllProjects();
+        List<ProjectShortDetails> allProjects = projectCatalogService.findAllProjects();
         allProjects = allProjects.stream()
                 .filter(project -> project.getCitySlug() != null
                         && project.getCitySlug().trim().equals(url.trim()))

@@ -3,6 +3,8 @@ package com.mypropertyfact.estate.services;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mypropertyfact.estate.common.FileUtils;
+import com.mypropertyfact.estate.config.CacheNames;
+import com.mypropertyfact.estate.dtos.BuilderLogoDto;
 import com.mypropertyfact.estate.dtos.BuilderResponse;
 import com.mypropertyfact.estate.dtos.BuilderDto;
 import com.mypropertyfact.estate.dtos.BuilderWriteDto;
@@ -10,11 +12,11 @@ import com.mypropertyfact.estate.dtos.ProjectShortDetails;
 import com.mypropertyfact.estate.entities.Builder;
 import com.mypropertyfact.estate.models.Response;
 import com.mypropertyfact.estate.repositories.BuilderRepository;
-import com.mypropertyfact.estate.repositories.ProjectRepository;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,7 +43,7 @@ public class BuilderService {
     private static final int MAX_GALLERY_IMAGES_FROM_ZIP = 80;
 
     private final BuilderRepository builderRepository;
-    private final ProjectRepository projectRepository;
+    private final ProjectCatalogService projectCatalogService;
     private final FileUtils fileUtils;
     private final ObjectMapper objectMapper;
 
@@ -49,9 +51,16 @@ public class BuilderService {
     private String uploadDir;
 
     // Getting all builders
+    @Cacheable(CacheNames.BUILDER_ALL)
     public BuilderResponse getAllBuilders() {
         return new BuilderResponse(builderRepository.findAllProjectedBy(Sort.by(Sort.Direction.ASC, "builderName")),
                 new Response(1, "All builders fetched successfully...", 0));
+    }
+
+    @Cacheable(CacheNames.BUILDER_LOGOS)
+    @Transactional(readOnly = true)
+    public List<BuilderLogoDto> getBuildersWithLogos() {
+        return List.copyOf(builderRepository.findAllWithLogo());
     }
 
     public Response addUpdateBuilder(BuilderWriteDto dto) {
@@ -139,7 +148,7 @@ public class BuilderService {
     @Transactional
     public BuilderDto getBySlug(String url) {
         Optional<Builder> dbBuilder = this.builderRepository.findBySlugUrl(url);
-        List<ProjectShortDetails> projectDetailDtoList = projectRepository.findAllProjects().stream()
+        List<ProjectShortDetails> projectDetailDtoList = projectCatalogService.findAllProjects().stream()
                 .filter(project -> project.getBuilderSlug()
                         .equals(url))
                 .collect(Collectors.toList());

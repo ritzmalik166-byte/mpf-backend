@@ -32,4 +32,8 @@ public interface LocalityRepository extends JpaRepository<Locality, Long> {
             l.city.id = :cityId
             """)
     List<LocalityShortDto> findAllLocalitiesOfCity(@Param("cityId") int cityId);
+
+    /** Rows of [cityId, localityId, localityName] for every locality, in one query. */
+    @Query("SELECT l.city.id, l.id, l.localityName FROM Locality l")
+    List<Object[]> findAllLocalityRowsWithCityId();
 }

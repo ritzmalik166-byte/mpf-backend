@@ -24,6 +24,12 @@ public class CityController {
         return new ResponseEntity<>(cityService.getAllCities(), HttpStatus.OK);
     }
 
+    /** Slim city list for header, footer and search filters (no descriptions, meta or localities). */
+    @GetMapping("/nav")
+    public ResponseEntity<?> getCityNav() {
+        return new ResponseEntity<>(cityService.getCityNav(), HttpStatus.OK);
+    }
+
     @PostMapping("/add-new")
     @PreAuthorize("@adminPermissionService.can(authentication, 'MANAGE_OPTIONS')")
     public ResponseEntity<?> postNewCity(@RequestBody CityDto cityDto) {

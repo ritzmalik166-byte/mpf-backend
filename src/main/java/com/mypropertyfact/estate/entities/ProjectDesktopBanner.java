@@ -1,6 +1,7 @@
 package com.mypropertyfact.estate.entities;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.mypropertyfact.estate.config.CatalogCacheEvictionListener;
 import jakarta.persistence.*;
 import lombok.Data;
 import lombok.ToString;
@@ -13,6 +14,7 @@ import java.time.LocalDateTime;
 @Data
 @Table(name = "project_desktop_banners")
 @ToString(exclude = "project")
+@EntityListeners(CatalogCacheEvictionListener.class)
 public class ProjectDesktopBanner {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

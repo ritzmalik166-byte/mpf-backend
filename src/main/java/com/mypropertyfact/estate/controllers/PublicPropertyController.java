@@ -44,11 +44,12 @@ public class PublicPropertyController {
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Double minPrice,
             @RequestParam(required = false) Double maxPrice,
-            @RequestParam(required = false) String subType) {
+            @RequestParam(required = false) String subType,
+            @RequestParam(required = false) Integer limit) {
         
         try {
             List<PropertyShortDetailsDto> listings = propertyListingService.getApprovedPropertyListings(
-                city, listingType, transaction, bedrooms, status, minPrice, maxPrice, subType);
+                city, listingType, transaction, bedrooms, status, minPrice, maxPrice, subType, limit);
             
             Map<String, Object> response = new HashMap<>();
             response.put("success", true);

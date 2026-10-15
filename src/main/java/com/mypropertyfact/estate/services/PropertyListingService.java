@@ -13,6 +13,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.hibernate.Hibernate;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -433,15 +435,49 @@ public class PropertyListingService {
     public List<PropertyShortDetailsDto> getApprovedPropertyListings(
             String city, String listingType, String transaction, Integer bedrooms,
             String status, Double minPrice, Double maxPrice, String subType) {
+        return getApprovedPropertyListings(
+                city, listingType, transaction, bedrooms, status, minPrice, maxPrice, subType, null);
+    }
 
-        List<PropertyShortDetailsDto> listings = propertyListingRepository
-                .getPropertyShortDetails(ProjectApprovalStatus.APPROVED);
+    @Transactional(readOnly = true)
+    public List<PropertyShortDetailsDto> getApprovedPropertyListings(
+            String city, String listingType, String transaction, Integer bedrooms,
+            String status, Double minPrice, Double maxPrice, String subType, Integer limit) {
+
+        Pageable pageable = limit != null && limit > 0
+                ? PageRequest.of(0, Math.min(limit, 200))
+                : Pageable.unpaged();
+        List<PropertyShortDetailsDto> listings = propertyListingRepository.findApprovedShortDetails(
+                ProjectApprovalStatus.APPROVED,
+                lowerOrNull(city),
+                lowerOrNull(listingType),
+                lowerOrNull(transaction),
+                lowerOrNull(subType),
+                lowerOrNull(status),
+                bedrooms != null && bedrooms > 0 ? bedrooms : null,
+                minPrice,
+                maxPrice,
+                pageable);
+        if (listings.isEmpty()) return listings;
+
+        List<Long> ids = listings.stream().map(PropertyShortDetailsDto::getId).toList();
+        Map<Long, List<String>> imagesByListing = new HashMap<>();
+        for (Object[] row : propertyListingRepository.findImageUrlsByListingIds(ids)) {
+            if (row == null || row.length < 2 || row[0] == null || row[1] == null) continue;
+            imagesByListing
+                    .computeIfAbsent(((Number) row[0]).longValue(), ignored -> new ArrayList<>())
+                    .add(String.valueOf(row[1]));
+        }
         for (PropertyShortDetailsDto listing : listings) {
-            List<PropertyListingImagesDto> images = propertyListingRepository.findByPropertyListingId(listing.getId());
-            List<String> imagesUrls =  images.stream().map(PropertyListingImagesDto::getImageUrl).collect(Collectors.toList());
-            listing.setImageUrls(imagesUrls);
+            listing.setImageUrls(imagesByListing.getOrDefault(listing.getId(), new ArrayList<>()));
         }
         return listings;
+    }
+
+    private static String lowerOrNull(String value) {
+        if (value == null) return null;
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed.toLowerCase(Locale.ROOT);
     }
 
     /**

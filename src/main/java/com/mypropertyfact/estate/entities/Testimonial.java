@@ -1,5 +1,6 @@
 package com.mypropertyfact.estate.entities;
 
+import com.mypropertyfact.estate.config.CatalogCacheEvictionListener;
 import jakarta.persistence.*;
 import lombok.Data;
 import org.hibernate.annotations.CreationTimestamp;
@@ -10,6 +11,7 @@ import java.time.LocalDateTime;
 @Entity
 @Data
 @Table(name = "testimonials")
+@EntityListeners(CatalogCacheEvictionListener.class)
 public class Testimonial {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

@@ -1,6 +1,7 @@
 package com.mypropertyfact.estate.repositories;
 
 import com.mypropertyfact.estate.dtos.CityDetailDto;
+import com.mypropertyfact.estate.dtos.CityNavDto;
 import com.mypropertyfact.estate.entities.City;
 import com.mypropertyfact.estate.projections.CityView;
 import org.springframework.data.domain.Sort;
@@ -47,6 +48,20 @@ public interface CityRepository extends JpaRepository<City, Integer> {
             ORDER BY c.name
             """)
     List<CityDetailDto> findAllCities();
+
+    @Query("""
+            SELECT new com.mypropertyfact.estate.dtos.CityNavDto(
+                c.id,
+                c.name,
+                c.slugUrl,
+                c.isActive,
+                s.stateName
+            )
+            FROM City c
+            LEFT JOIN c.state s
+            ORDER BY c.name
+            """)
+    List<CityNavDto> findAllCityNav();
 
     @Query("""
             SELECT new com.mypropertyfact.estate.dtos.CityDetailDto(

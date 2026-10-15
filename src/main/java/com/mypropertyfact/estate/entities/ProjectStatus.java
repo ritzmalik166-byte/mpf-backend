@@ -1,5 +1,6 @@
 package com.mypropertyfact.estate.entities;
 
+import com.mypropertyfact.estate.config.CatalogCacheEvictionListener;
 import jakarta.persistence.*;
 import lombok.Data;
 import lombok.ToString;
@@ -11,6 +12,7 @@ import java.util.List;
 @Table(name = "project_status")
 @Data
 @ToString(exclude = "projects")
+@EntityListeners(CatalogCacheEvictionListener.class)
 public class ProjectStatus {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

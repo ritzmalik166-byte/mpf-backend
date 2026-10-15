@@ -1,5 +1,6 @@
 package com.mypropertyfact.estate.controllers;
 
+import com.mypropertyfact.estate.dtos.BuilderLogoDto;
 import com.mypropertyfact.estate.dtos.BuilderResponse;
 import com.mypropertyfact.estate.dtos.BuilderDto;
 import com.mypropertyfact.estate.dtos.BuilderWriteDto;
@@ -30,6 +31,12 @@ public class BuilderController {
     @GetMapping("/get-all-builders")
     public ResponseEntity<List<Builder>> getAllBuildersList() {
         return ResponseEntity.ok(builderService.getAllBuildersList());
+    }
+
+    /** Slim list (id, name, slug, logo) of builders that have a logo; used by the home marquee. */
+    @GetMapping("/with-logos")
+    public ResponseEntity<List<BuilderLogoDto>> getBuildersWithLogos() {
+        return ResponseEntity.ok(builderService.getBuildersWithLogos());
     }
 
     @PostMapping("/add-update")
