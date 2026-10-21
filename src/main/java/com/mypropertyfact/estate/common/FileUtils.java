@@ -123,6 +123,32 @@ public class FileUtils {
         return imageName;
     }
 
+    // Saves as JPEG, scaling down proportionally only when the image exceeds the given bounds (never upscales)
+    public String saveImageWithinBounds(MultipartFile file, String newFileNameWithoutExtension, String uploadDir,
+                                        int maxWidth, int maxHeight, float quality) {
+        try {
+            BufferedImage image = ImageIO.read(file.getInputStream());
+            if (image == null) {
+                throw new IOException("Invalid image file: " + file.getOriginalFilename());
+            }
+            double scale = Math.min(1.0, Math.min(
+                    (double) maxWidth / image.getWidth(),
+                    (double) maxHeight / image.getHeight()));
+
+            Path uploadPath = Files.createDirectories(Paths.get(uploadDir));
+            String fileName = newFileNameWithoutExtension + ".jpeg";
+            Thumbnails.of(image)
+                    .scale(scale)
+                    .imageType(BufferedImage.TYPE_INT_RGB)
+                    .outputFormat("jpeg")
+                    .outputQuality(quality)
+                    .toFile(uploadPath.resolve(fileName).toFile());
+            return fileName;
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to save image", e);
+        }
+    }
+
     //delete file from destination
     public boolean deleteFileFromDestination(String fileName, String dirPath) {
         if (fileName != null && !fileName.isEmpty()) {

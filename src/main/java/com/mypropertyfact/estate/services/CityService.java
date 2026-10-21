@@ -31,8 +31,9 @@ import java.util.zip.ZipInputStream;
 @Slf4j
 @RequiredArgsConstructor
 public class CityService {
-    private static final int MONUMENT_MAX_W = 1200;
-    private static final int MONUMENT_MAX_H = 800;
+    private static final int MONUMENT_MAX_W = 1920;
+    private static final int MONUMENT_MAX_H = 1080;
+    private static final float MONUMENT_QUALITY = 0.85f;
 
     private final CityRepository cityRepository;
     private final StateRepository stateRepository;
@@ -115,13 +116,13 @@ public class CityService {
         }
         String cityUploadDir = Paths.get(uploadDir, "cities").toString();
         String slug = city.getSlugUrl() != null ? city.getSlugUrl() : "city";
-        String savedFileName = fileUtils.saveFile(
+        String savedFileName = fileUtils.saveImageWithinBounds(
                 monumentImage,
                 slug + "-monument-" + System.currentTimeMillis(),
                 cityUploadDir,
-                1200,
-                800,
-                0.85f
+                MONUMENT_MAX_W,
+                MONUMENT_MAX_H,
+                MONUMENT_QUALITY
         );
         if (savedFileName != null && !savedFileName.isBlank()) {
             if (city.getMonumentImage() != null && !city.getMonumentImage().isBlank()) {
