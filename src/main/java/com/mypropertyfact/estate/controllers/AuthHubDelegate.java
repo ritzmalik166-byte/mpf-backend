@@ -645,7 +645,8 @@ public class AuthHubDelegate {
             }
 
             Optional<User> existingByPhone = userRepository.findByPhone(phone);
-            if (existingByPhone.isEmpty() && (fullName == null || fullName.trim().isEmpty())) {
+            String normalizedFullName = fullName == null ? "" : fullName.trim();
+            if (existingByPhone.isEmpty() && normalizedFullName.isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.of(
                         "success", false,
                         "error", "full_name_required",
@@ -664,7 +665,7 @@ public class AuthHubDelegate {
                 user = existingByPhone.get();
                 if (fullName != null && !fullName.trim().isEmpty()
                         && (user.getFullName() == null || user.getFullName().isBlank())) {
-                    user.setFullName(fullName.trim());
+                    user.setFullName(normalizedFullName);
                 }
                 user.setVerified(true);
                 user = userRepository.save(user);
@@ -672,7 +673,7 @@ public class AuthHubDelegate {
             } else {
                 user = new User();
                 user.setPhone(phone);
-                user.setFullName(fullName.trim());
+                user.setFullName(normalizedFullName);
                 user.setPassword(passwordEncoder.encode(UUID.randomUUID().toString()));
                 Set<MasterRole> roles = new HashSet<>();
                 masterRoleRepository.findByRoleNameIgnoreCase("USER").ifPresentOrElse(roles::add, () -> {
@@ -686,7 +687,7 @@ public class AuthHubDelegate {
                 user.setVerified(true);
                 user.setEnabled(true);
                 user.setUserCategory("APP_USER");
-                user = userRepository.save(user);
+                user = userRepository.saveAndFlush(user);
                 userStatus = "new";
             }
 

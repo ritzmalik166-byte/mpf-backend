@@ -113,7 +113,7 @@ public class JwtService {
         return Jwts
                 .builder()
                 .setClaims(extraClaims)
-                .setSubject(user.getEmail())
+                .setSubject(user.getUsername())
                 .setIssuedAt(new Date(System.currentTimeMillis()))
                 .setExpiration(new Date(System.currentTimeMillis() + expiration))
                 .signWith(getSignInKey(), SignatureAlgorithm.HS256)
@@ -240,8 +240,9 @@ public class JwtService {
         if (!isRefreshTokenValid(refreshToken)) {
             throw new RuntimeException("Invalid refresh token");
         }
-        String email = extractUsername(refreshToken);
-        Optional<User> userOpt = userRepository.findByEmail(email);
+        String identity = extractUsername(refreshToken);
+        Optional<User> userOpt = userRepository.findByEmailIgnoreCase(identity)
+                .or(() -> userRepository.findByPhone(identity));
         if (userOpt.isEmpty()) {
             throw new RuntimeException("User not found");
         }

@@ -203,7 +203,7 @@ public class User implements UserDetails {
 
     @Override
     public String getUsername() {
-        return email;
+        return email != null && !email.isBlank() ? email : phone;
     }
 
     @Override

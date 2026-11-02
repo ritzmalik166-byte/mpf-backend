@@ -19,9 +19,12 @@ public class ApplicationConfiguration {
 
     @Bean
     UserDetailsService userDetailsService() {
-        return username -> userRepository.findByEmailIgnoreCase(
-                        username == null ? "" : username.trim())
+        return username -> {
+            String identity = username == null ? "" : username.trim();
+            return userRepository.findByEmailIgnoreCase(identity)
+                .or(() -> userRepository.findByPhone(identity))
                 .orElseThrow(() -> new UsernameNotFoundException("User not found"));
+        };
     }
 
     @Bean
