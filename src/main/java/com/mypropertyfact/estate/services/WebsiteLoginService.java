@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
@@ -31,7 +32,11 @@ public class WebsiteLoginService {
     private final IpTrackService ipTrackService;
     private final ObjectMapper objectMapper;
 
-    @Transactional
+    /**
+     * Runs in its own transaction so an audit-log failure can never mark the caller's
+     * login/registration transaction rollback-only (which surfaces as UnexpectedRollbackException).
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void record(User user, HttpServletRequest request, String source, String accountStatus) {
         if (user == null) {
             return;
