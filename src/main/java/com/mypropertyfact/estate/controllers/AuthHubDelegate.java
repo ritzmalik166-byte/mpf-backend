@@ -615,8 +615,9 @@ public class AuthHubDelegate {
     /**
      * Public website OTP login/register (not the broker portal).
      * Existing phone → sign in. New phone → create APP_USER after name is provided.
+     * Not @Transactional on purpose: each repository call commits on its own, so a caught
+     * failure returns a real error instead of an UnexpectedRollbackException.
      */
-    @Transactional
     public ResponseEntity<?> loginOrRegisterWebsiteUserTrusted(
             Map<String, String> request, String internalSecret, HttpServletRequest httpRequest) {
         if (brokerAuthInternalSecret == null || brokerAuthInternalSecret.isBlank()
