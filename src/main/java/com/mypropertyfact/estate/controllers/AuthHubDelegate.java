@@ -691,7 +691,12 @@ public class AuthHubDelegate {
                 userStatus = "new";
             }
 
-            websiteLoginService.record(user, httpRequest, "website-otp", userStatus);
+            try {
+                websiteLoginService.record(user, httpRequest, "website-otp", userStatus);
+            } catch (Exception recordEx) {
+                // Audit logging must never block sign-in (runs in its own transaction).
+                log.warn("Website login audit failed for user {}: {}", user.getId(), recordEx.toString());
+            }
             return buildPortalAuthResponse(user, userStatus);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
