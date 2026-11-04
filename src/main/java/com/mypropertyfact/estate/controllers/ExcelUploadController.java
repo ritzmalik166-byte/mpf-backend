@@ -3,6 +3,7 @@ package com.mypropertyfact.estate.controllers;
 import com.mypropertyfact.estate.models.Response;
 import com.mypropertyfact.estate.services.ExcelUploadService;
 import com.mypropertyfact.estate.services.ProjectExcelUploadService;
+import com.mypropertyfact.estate.services.ProjectImportProgress;
 import com.mypropertyfact.estate.services.ProjectNearbyBenefitsExcelService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,6 +48,26 @@ public class ExcelUploadController {
             @RequestParam("file") MultipartFile excelFile,
             @RequestParam(value = "imagesZip", required = false) MultipartFile imagesZip) {
         return ResponseEntity.ok(projectExcelUploadService.uploadProjectsExcel(excelFile, imagesZip));
+    }
+
+    /**
+     * Same import as {@code /projects}, but runs in the background: returns the job straight
+     * away (already {@code done} if the files were rejected), then poll {@code /projects/jobs/{jobId}}.
+     */
+    @PostMapping("/projects/async")
+    @PreAuthorize("@adminPermissionService.can(authentication, 'MANAGE_PROJECTS')")
+    public ResponseEntity<ProjectImportProgress> startProjectsUpload(
+            @RequestParam("file") MultipartFile excelFile,
+            @RequestParam(value = "imagesZip", required = false) MultipartFile imagesZip) {
+        return ResponseEntity.ok(projectExcelUploadService.startProjectsImport(excelFile, imagesZip));
+    }
+
+    @GetMapping("/projects/jobs/{jobId}")
+    @PreAuthorize("@adminPermissionService.can(authentication, 'MANAGE_PROJECTS')")
+    public ResponseEntity<ProjectImportProgress> getProjectsUploadJob(@PathVariable String jobId) {
+        return projectExcelUploadService.getImportJob(jobId)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     /**

@@ -485,15 +485,33 @@ public class FileUtils {
             int outH = Math.max(1, (int) Math.round(origH * scale));
             boolean wasUpscaled = outW > origW || outH > origH;
 
-            BufferedImage toSave = new BufferedImage(outW, outH,
-                    originalImage.getType() == BufferedImage.TYPE_INT_ARGB || originalImage.getType() == BufferedImage.TYPE_4BYTE_ABGR
-                            ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB);
+            int outType = originalImage.getType() == BufferedImage.TYPE_INT_ARGB || originalImage.getType() == BufferedImage.TYPE_4BYTE_ABGR
+                    ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
+
+            // Large shrinks (e.g. a 4000px photo to 1600px) are halved with fast bilinear passes
+            // first; one bicubic pass over the full original is the slowest part of a bulk upload
+            // and also aliases more. The final pass below is still bicubic at full quality.
+            BufferedImage source = originalImage;
+            int stepW = origW;
+            int stepH = origH;
+            while (stepW / 2 >= outW && stepH / 2 >= outH) {
+                stepW /= 2;
+                stepH /= 2;
+                BufferedImage half = new BufferedImage(stepW, stepH, outType);
+                Graphics2D hg = half.createGraphics();
+                hg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                hg.drawImage(source, 0, 0, stepW, stepH, null);
+                hg.dispose();
+                source = half;
+            }
+
+            BufferedImage toSave = new BufferedImage(outW, outH, outType);
             Graphics2D g = toSave.createGraphics();
             g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
             g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             g.setRenderingHint(RenderingHints.KEY_ALPHA_INTERPOLATION, RenderingHints.VALUE_ALPHA_INTERPOLATION_QUALITY);
-            g.drawImage(originalImage, 0, 0, outW, outH, null);
+            g.drawImage(source, 0, 0, outW, outH, null);
             g.dispose();
 
             if (("jpg".equals(extension) || "jpeg".equals(extension)) && (toSave.getType() == BufferedImage.TYPE_INT_ARGB || toSave.getType() == BufferedImage.TYPE_4BYTE_ABGR)) {

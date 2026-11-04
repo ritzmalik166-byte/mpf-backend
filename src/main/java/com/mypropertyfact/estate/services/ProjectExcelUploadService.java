@@ -8,16 +8,26 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.core.task.TaskRejectedException;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.security.concurrent.DelegatingSecurityContextRunnable;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
@@ -71,6 +81,18 @@ public class ProjectExcelUploadService {
     @Lazy
     private ProjectExcelUploadService self;
 
+    @Autowired
+    @Qualifier("projectImportJobExecutor")
+    private ThreadPoolTaskExecutor importJobExecutor;
+
+    @Autowired
+    @Qualifier("projectImageExecutor")
+    private ThreadPoolTaskExecutor imageExecutor;
+
+    /** Background imports by job id; finished jobs are dropped after an hour. */
+    private final Map<String, ProjectImportProgress> importJobs = new ConcurrentHashMap<>();
+    private static final long JOB_RETENTION_MS = 60L * 60 * 1000;
+
     private static final int GALLERY_W = 1600;
     private static final int GALLERY_H = 1200;
     private static final int DESKTOP_W = 2508;
@@ -82,55 +104,136 @@ public class ProjectExcelUploadService {
     private static final int PROJECT_LOCATION_WIDTH = 1200;
     private static final int PROJECT_LOCATION_HEIGHT = 800;
 
+    /** Synchronous import (kept for API compatibility): returns once everything is saved. */
     public Response uploadProjectsExcel(MultipartFile excelFile, MultipartFile imagesZip) {
-        Response response = new Response();
+        Response invalid = validateUpload(excelFile);
+        if (invalid != null) {
+            return invalid;
+        }
+        try {
+            byte[] excelBytes = excelFile.getBytes();
+            Map<String, byte[]> imageMap = readImagesZip(imagesZip);
+            return runImport(excelBytes, imageMap, new ProjectImportProgress());
+        } catch (Exception e) {
+            log.error("Excel upload failed", e);
+            return failure("Failed to process Excel: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Starts the import in the background and returns its job at once, so the admin panel can
+     * poll {@link #getImportJob} for progress instead of holding one request open for minutes.
+     * The files are read here, while the request (and its temp files) is still alive, and the
+     * caller's security context is carried over so listing activity is still attributed.
+     */
+    public ProjectImportProgress startProjectsImport(MultipartFile excelFile, MultipartFile imagesZip) {
+        Response invalid = validateUpload(excelFile);
+        if (invalid != null) {
+            ProjectImportProgress rejected = new ProjectImportProgress();
+            rejected.finish(invalid);
+            return rejected;
+        }
+        byte[] excelBytes;
+        Map<String, byte[]> imageMap;
+        try {
+            excelBytes = excelFile.getBytes();
+            imageMap = readImagesZip(imagesZip);
+        } catch (Exception e) {
+            ProjectImportProgress failed = new ProjectImportProgress();
+            failed.finish(failure("Could not read the uploaded files: " + e.getMessage()));
+            return failed;
+        }
+
+        purgeFinishedJobs();
+        ProjectImportProgress progress = new ProjectImportProgress();
+        importJobs.put(progress.getJobId(), progress);
+        SecurityContext securityContext = SecurityContextHolder.getContext();
+        try {
+            importJobExecutor.execute(new DelegatingSecurityContextRunnable(() -> {
+                try {
+                    progress.finish(runImport(excelBytes, imageMap, progress));
+                } catch (Exception e) {
+                    log.error("Background Excel upload failed", e);
+                    progress.finish(failure("Failed to process Excel: " + e.getMessage()));
+                }
+            }, securityContext));
+        } catch (TaskRejectedException e) {
+            importJobs.remove(progress.getJobId());
+            progress.finish(failure("Too many imports are running. Please try again in a few minutes."));
+        }
+        return progress;
+    }
+
+    public Optional<ProjectImportProgress> getImportJob(String jobId) {
+        return Optional.ofNullable(importJobs.get(jobId));
+    }
+
+    private void purgeFinishedJobs() {
+        long cutoff = System.currentTimeMillis() - JOB_RETENTION_MS;
+        importJobs.values().removeIf(job -> job.isDone() && job.getFinishedAt() < cutoff);
+    }
+
+    private static Response validateUpload(MultipartFile excelFile) {
         if (excelFile == null || excelFile.isEmpty()) {
-            response.setIsSuccess(0);
-            response.setMessage("Excel file is required");
-            return response;
+            return failure("Excel file is required");
         }
         String filename = excelFile.getOriginalFilename();
         if (filename == null || (!filename.endsWith(".xlsx") && !filename.endsWith(".xls"))) {
-            response.setIsSuccess(0);
-            response.setMessage("Only Excel files (.xlsx or .xls) are allowed");
-            return response;
+            return failure("Only Excel files (.xlsx or .xls) are allowed");
         }
+        return null;
+    }
 
+    private static Response failure(String message) {
+        Response response = new Response();
+        response.setIsSuccess(0);
+        response.setMessage(message);
+        return response;
+    }
+
+    private Map<String, byte[]> readImagesZip(MultipartFile imagesZip) {
         Map<String, byte[]> imageMap = new HashMap<>();
         if (imagesZip != null && !imagesZip.isEmpty() && imagesZip.getOriginalFilename() != null
                 && imagesZip.getOriginalFilename().toLowerCase().endsWith(".zip")) {
-            try {
-                extractZipToMap(imagesZip.getInputStream(), imageMap);
+            try (InputStream zipIs = imagesZip.getInputStream()) {
+                extractZipToMap(zipIs, imageMap);
             } catch (Exception e) {
                 log.warn("Could not extract images zip: {}", e.getMessage());
             }
         }
+        return imageMap;
+    }
 
+    private Response runImport(byte[] excelBytes, Map<String, byte[]> imageMap, ProjectImportProgress progress)
+            throws Exception {
         List<String> errors = new ArrayList<>();
         int created = 0;
         int updated = 0;
+        boolean hadImages = !imageMap.isEmpty();
 
-        try (InputStream is = excelFile.getInputStream();
+        try (InputStream is = new ByteArrayInputStream(excelBytes);
              Workbook workbook = new XSSFWorkbook(is)) {
 
             Sheet sheet = workbook.getSheetAt(0);
             if (sheet == null || sheet.getPhysicalNumberOfRows() < 2) {
-                response.setIsSuccess(0);
-                response.setMessage("Excel must have a header row and at least one data row");
-                return response;
+                return failure("Excel must have a header row and at least one data row");
             }
 
             Row headerRow = sheet.getRow(0);
             Map<String, Integer> colIndex = buildHeaderIndex(headerRow);
+            progress.startRows(sheet.getLastRowNum(), imageMap.size());
 
             for (int r = 1; r <= sheet.getLastRowNum(); r++) {
                 Row row = sheet.getRow(r);
-                if (row == null)
+                if (row == null) {
+                    progress.rowDone();
                     continue;
+                }
 
                 String projectName = getCell(colIndex, row, "PROJECT NAME");
                 if (projectName == null || projectName.trim().isEmpty()) {
                     errors.add("Row " + (r + 1) + ": Project name is required");
+                    progress.rowDone();
                     continue;
                 }
 
@@ -139,9 +242,7 @@ public class ProjectExcelUploadService {
                             row, colIndex, projectName.trim(), r + 1);
                     if (outcome.error != null) {
                         errors.add(outcome.error);
-                        continue;
-                    }
-                    if (outcome.created) {
+                    } else if (outcome.created) {
                         created++;
                     } else if (outcome.updated) {
                         updated++;
@@ -150,41 +251,38 @@ public class ProjectExcelUploadService {
                     errors.add("Row " + (r + 1) + ": " + e.getMessage());
                     log.warn("Row {} error: {}", r + 1, e.getMessage(), e);
                 }
+                progress.rowDone();
             }
-
-            // Process images only from zip (filename format: ProjectName-123_ImageType_My-Property-Fact)
-            int imagesProcessed = 0;
-            int imagesSkipped = 0;
-            if (!imageMap.isEmpty()) {
-                int[] imageStats = processZipImages(imageMap);
-                imagesProcessed = imageStats[0];
-                imagesSkipped = imageStats[1];
-                log.info("Processed {} images from zip ({} skipped)", imagesProcessed, imagesSkipped);
-            }
-
-            StringBuilder msg = new StringBuilder();
-            msg.append("Upload completed. Created: ").append(created).append(", Updated: ").append(updated);
-            if (!imageMap.isEmpty()) {
-                msg.append(". Images saved: ").append(imagesProcessed);
-                if (imagesSkipped > 0) {
-                    msg.append(", images skipped (no matching project): ").append(imagesSkipped);
-                }
-            }
-            if (!errors.isEmpty()) {
-                msg.append(". Errors: ").append(errors.size()).append(" - ")
-                        .append(String.join("; ", errors.subList(0, Math.min(10, errors.size()))));
-                if (errors.size() > 10)
-                    msg.append("...");
-            }
-            response.setIsSuccess(1);
-            response.setMessage(msg.toString());
-
-        } catch (Exception e) {
-            log.error("Excel upload failed", e);
-            response.setIsSuccess(0);
-            response.setMessage("Failed to process Excel: " + e.getMessage());
         }
 
+        // Process images only from zip (filename format: ProjectName-123_ImageType_My-Property-Fact)
+        int imagesProcessed = 0;
+        int imagesSkipped = 0;
+        if (hadImages) {
+            progress.startImages();
+            int[] imageStats = processZipImages(imageMap, progress);
+            imagesProcessed = imageStats[0];
+            imagesSkipped = imageStats[1];
+            log.info("Processed {} images from zip ({} skipped)", imagesProcessed, imagesSkipped);
+        }
+
+        StringBuilder msg = new StringBuilder();
+        msg.append("Upload completed. Created: ").append(created).append(", Updated: ").append(updated);
+        if (hadImages) {
+            msg.append(". Images saved: ").append(imagesProcessed);
+            if (imagesSkipped > 0) {
+                msg.append(", images skipped (no matching project): ").append(imagesSkipped);
+            }
+        }
+        if (!errors.isEmpty()) {
+            msg.append(". Errors: ").append(errors.size()).append(" - ")
+                    .append(String.join("; ", errors.subList(0, Math.min(10, errors.size()))));
+            if (errors.size() > 10)
+                msg.append("...");
+        }
+        Response response = new Response();
+        response.setIsSuccess(1);
+        response.setMessage(msg.toString());
         return response;
     }
 
@@ -292,40 +390,61 @@ public class ProjectExcelUploadService {
         }
     }
 
+    /** One zip image the import will write, decided before any resizing starts. */
+    record PlannedImage(String filename, int projectId, String kind, String baseName,
+                                String altTag, String directory, int width, int height) {
+    }
+
+    /** A resized image now on disk, waiting for its database row. */
+    record SavedImage(PlannedImage plan, String storedName) {
+    }
+
+    /** What a project already has, loaded once per project instead of once per image. */
+    private static final class ProjectImageState {
+        final Project project;
+        final String slug;
+        Set<String> galleryAltTags;
+        Set<String> desktopAltTags;
+        Set<String> mobileAltTags;
+        boolean logoTaken;
+        boolean locationTaken;
+        boolean thumbnailTaken;
+
+        ProjectImageState(Project project, String slug) {
+            this.project = project;
+            this.slug = slug;
+            this.logoTaken = project.getProjectLogo() != null && !project.getProjectLogo().isBlank();
+            this.locationTaken = project.getLocationMap() != null && !project.getLocationMap().isBlank();
+            this.thumbnailTaken = project.getProjectThumbnail() != null && !project.getProjectThumbnail().isBlank();
+        }
+    }
+
     /**
      * Process images from the zip map. Filename format: {@code ProjectName-123_ImageType_My-Property-Fact}
      * First segment = project identifier (with hyphens), second = image type (e.g. Gallery-2, Opening-1), third = ignored.
      * Images are saved under the project folder with unique names and generated alt tags.
+     *
+     * <p>Runs in three steps so ~400 images take seconds per project rather than minutes:
+     * plan every file against each project's existing images (one lookup per project),
+     * resize the planned files in parallel, then insert each project's rows in one transaction.
+     * The rules for which files are saved or skipped are the same as before.
+     *
+     * @return int[]{savedCount, skippedCount}
      */
-    /** @return int[]{savedCount, skippedCount} */
-    private int[] processZipImages(Map<String, byte[]> imageMap) {
-        int count = 0;
+    private int[] processZipImages(Map<String, byte[]> imageMap, ProjectImportProgress progress) {
+        Map<String, Optional<Project>> projectsByKey = new HashMap<>();
+        Map<Integer, ProjectImageState> states = new HashMap<>();
+        List<PlannedImage> plans = new ArrayList<>();
         int skipped = 0;
-        for (Map.Entry<String, byte[]> entry : imageMap.entrySet()) {
-            String filename = entry.getKey();
-            byte[] data = entry.getValue();
-            if (data == null || data.length == 0)
+
+        List<String> filenames = new ArrayList<>(imageMap.keySet());
+        Collections.sort(filenames);
+        for (String filename : filenames) {
+            byte[] data = imageMap.get(filename);
+            if (data == null || data.length == 0) {
+                progress.imageDone();
                 continue;
-
-            try {
-                int saved = self.saveZipImageInNewTransaction(filename, data);
-                if (saved > 0) {
-                    count += saved;
-                } else if (saved < 0) {
-                    skipped++;
-                }
-            } catch (Exception e) {
-                log.warn("Could not save zip image '{}': {}", filename, e.getMessage());
             }
-        }
-        return new int[]{count, skipped};
-    }
-
-    /**
-     * @return 1 if saved, 0 if skipped (format/no-op), -1 if no matching project
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
-    public int saveZipImageInNewTransaction(String filename, byte[] data) {
             String baseName = filename;
             if (baseName.contains("/"))
                 baseName = baseName.substring(baseName.lastIndexOf('/') + 1);
@@ -336,112 +455,198 @@ public class ProjectExcelUploadService {
             String[] parts = baseName.split("_");
             if (parts.length < 2) {
                 log.debug("Skipping zip file (expected format ProjectName_ImageType_*): {}", filename);
-                return 0;
+                progress.imageDone();
+                continue;
             }
-
             String projectKey = parts[0].trim();
             String imageType = parts[1].trim();
+            if (projectKey.isEmpty() || imageType.isEmpty()) {
+                progress.imageDone();
+                continue;
+            }
 
-            if (projectKey.isEmpty() || imageType.isEmpty())
-                return 0;
-
-            Optional<Project> projectOpt = resolveProjectFromZipKey(projectKey);
+            Optional<Project> projectOpt = projectsByKey.computeIfAbsent(projectKey, this::resolveProjectFromZipKey);
             if (projectOpt.isEmpty()) {
                 log.debug("No project found for zip key '{}' (file '{}'), skipping image", projectKey, filename);
-                return -1;
+                skipped++;
+                progress.imageDone();
+                continue;
             }
 
             Project project = projectOpt.get();
-            String slug = project.getSlugURL();
-            if (slug == null || slug.isEmpty())
-                slug = fileUtils.generateSlug(project.getProjectName());
-            String projectDir = uploadDir + "properties/" + slug + "/";
+            ProjectImageState state = states.computeIfAbsent(project.getId(), id -> {
+                String slug = project.getSlugURL();
+                if (slug == null || slug.isEmpty())
+                    slug = fileUtils.generateSlug(project.getProjectName());
+                return new ProjectImageState(project, slug);
+            });
+            PlannedImage plan = planImage(filename, imageType, state);
+            if (plan == null) {
+                progress.imageDone();
+            } else {
+                plans.add(plan);
+            }
+        }
 
-            String uniqueBaseName = sanitizeImageType(imageType) + "_" + UUID.randomUUID().toString().substring(0, 8);
-            String altTag = generateAltTag(project.getProjectName(), imageType);
-
-            if (imageType.toLowerCase().startsWith("gallery")) {
-                boolean alreadyExists = projectGalleryRepository.findBySlugUrl(slug).stream()
-                        .anyMatch(g -> altTag.equals(g.getAltTag()));
-                if (alreadyExists) return 0;
-                String saved = fileUtils.saveImageFromBytes(data, uniqueBaseName, projectDir, GALLERY_W, GALLERY_H);
-                if (saved != null) {
-                    ProjectGallery gallery = new ProjectGallery();
-                    gallery.setProject(project);
-                    gallery.setImage(saved);
-                    gallery.setSlugUrl(slug);
-                    gallery.setType("gallery");
-                    gallery.setAltTag(altTag);
-                    projectGalleryRepository.save(gallery);
-                    return 1;
+        List<Future<SavedImage>> futures = new ArrayList<>(plans.size());
+        for (PlannedImage plan : plans) {
+            // Hand the bytes to the worker and drop the map's copy so memory frees as images finish.
+            byte[] data = imageMap.remove(plan.filename());
+            futures.add(imageExecutor.submit(() -> {
+                try {
+                    String stored = fileUtils.saveImageFromBytes(
+                            data, plan.baseName(), plan.directory(), plan.width(), plan.height());
+                    return stored != null ? new SavedImage(plan, stored) : null;
+                } finally {
+                    progress.imageDone();
                 }
-            } else if (imageType.toLowerCase().startsWith("desktop")) {
-                boolean alreadyExists = projectDesktopBannerRepository.findByProject(project).stream()
-                        .anyMatch(b -> altTag.equals(b.getDesktopAltTag()));
-                if (alreadyExists) return 0;
-                String saved = fileUtils.saveImageFromBytes(data, uniqueBaseName, projectDir, DESKTOP_W, DESKTOP_H);
+            }));
+        }
+        imageMap.clear();
+
+        Map<Integer, List<SavedImage>> savedByProject = new LinkedHashMap<>();
+        for (Future<SavedImage> future : futures) {
+            try {
+                SavedImage saved = future.get();
                 if (saved != null) {
+                    savedByProject.computeIfAbsent(saved.plan().projectId(), id -> new ArrayList<>()).add(saved);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (ExecutionException e) {
+                log.warn("Could not save zip image: {}", e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+            }
+        }
+
+        int count = 0;
+        for (Map.Entry<Integer, List<SavedImage>> entry : savedByProject.entrySet()) {
+            try {
+                count += self.saveProjectImagesInNewTransaction(entry.getKey(), states.get(entry.getKey()).slug, entry.getValue());
+            } catch (Exception e) {
+                log.warn("Could not record {} zip images for project {}: {}",
+                        entry.getValue().size(), entry.getKey(), e.getMessage());
+            }
+        }
+        return new int[]{count, skipped};
+    }
+
+    /**
+     * Decides where a zip image goes, or returns null when it would duplicate an image the
+     * project already has (or one planned earlier in this upload).
+     */
+    private PlannedImage planImage(String filename, String imageType, ProjectImageState state) {
+        Project project = state.project;
+        String projectDir = uploadDir + "properties/" + state.slug + "/";
+        String uniqueBaseName = sanitizeImageType(imageType) + "_" + UUID.randomUUID().toString().substring(0, 8);
+        String altTag = generateAltTag(project.getProjectName(), imageType);
+        String type = imageType.toLowerCase();
+
+        if (type.startsWith("desktop")) {
+            if (state.desktopAltTags == null) {
+                state.desktopAltTags = new HashSet<>();
+                projectDesktopBannerRepository.findByProject(project)
+                        .forEach(b -> state.desktopAltTags.add(b.getDesktopAltTag()));
+            }
+            if (!state.desktopAltTags.add(altTag)) return null;
+            return new PlannedImage(filename, project.getId(), "desktop", uniqueBaseName, altTag, projectDir, DESKTOP_W, DESKTOP_H);
+        }
+        if (type.startsWith("mobile")) {
+            if (state.mobileAltTags == null) {
+                state.mobileAltTags = new HashSet<>();
+                projectMobileBannerRepository.findByProject(project)
+                        .forEach(b -> state.mobileAltTags.add(b.getMobileAltTag()));
+            }
+            if (!state.mobileAltTags.add(altTag)) return null;
+            return new PlannedImage(filename, project.getId(), "mobile", uniqueBaseName, altTag, projectDir, MOBILE_W, MOBILE_H);
+        }
+        if (type.startsWith("logo")) {
+            if (state.logoTaken) return null;
+            state.logoTaken = true;
+            return new PlannedImage(filename, project.getId(), "logo", uniqueBaseName, altTag, projectDir, PROJECT_LOGO_WIDTH, PROJECT_LOGO_HEIGHT);
+        }
+        if (type.startsWith("location")) {
+            if (state.locationTaken) return null;
+            state.locationTaken = true;
+            return new PlannedImage(filename, project.getId(), "location", uniqueBaseName, altTag, projectDir, PROJECT_LOCATION_WIDTH, PROJECT_LOCATION_HEIGHT);
+        }
+        if (type.startsWith("thumbnail")) {
+            if (state.thumbnailTaken) return null;
+            state.thumbnailTaken = true;
+            return new PlannedImage(filename, project.getId(), "thumbnail", uniqueBaseName, altTag, projectDir, MOBILE_W, MOBILE_H);
+        }
+        // "gallery-*" and any other type are saved as gallery images.
+        if (state.galleryAltTags == null) {
+            state.galleryAltTags = new HashSet<>();
+            projectGalleryRepository.findBySlugUrl(state.slug)
+                    .forEach(g -> state.galleryAltTags.add(g.getAltTag()));
+        }
+        if (!state.galleryAltTags.add(altTag)) return null;
+        return new PlannedImage(filename, project.getId(), "gallery", uniqueBaseName, altTag, projectDir, GALLERY_W, GALLERY_H);
+    }
+
+    /** Inserts one project's resized images in a single transaction. @return rows saved */
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
+    public int saveProjectImagesInNewTransaction(int projectId, String slug, List<SavedImage> images) {
+        Project project = projectRepository.findById(projectId).orElse(null);
+        if (project == null) {
+            return 0;
+        }
+        List<ProjectGallery> galleries = new ArrayList<>();
+        List<ProjectDesktopBanner> desktopBanners = new ArrayList<>();
+        List<ProjectMobileBanner> mobileBanners = new ArrayList<>();
+        boolean projectChanged = false;
+        int count = 0;
+
+        for (SavedImage image : images) {
+            PlannedImage plan = image.plan();
+            switch (plan.kind()) {
+                case "desktop" -> {
                     ProjectDesktopBanner banner = new ProjectDesktopBanner();
                     banner.setProject(project);
-                    banner.setDesktopImage(saved);
-                    banner.setDesktopAltTag(altTag);
-                    projectDesktopBannerRepository.save(banner);
-                    return 1;
+                    banner.setDesktopImage(image.storedName());
+                    banner.setDesktopAltTag(plan.altTag());
+                    desktopBanners.add(banner);
                 }
-            } else if (imageType.toLowerCase().startsWith("mobile")) {
-                boolean alreadyExists = projectMobileBannerRepository.findByProject(project).stream()
-                        .anyMatch(b -> altTag.equals(b.getMobileAltTag()));
-                if (alreadyExists) return 0;
-                String saved = fileUtils.saveImageFromBytes(data, uniqueBaseName, projectDir, MOBILE_W, MOBILE_H);
-                if (saved != null) {
+                case "mobile" -> {
                     ProjectMobileBanner banner = new ProjectMobileBanner();
                     banner.setProject(project);
-                    banner.setMobileImage(saved);
-                    banner.setMobileAltTag(altTag);
-                    projectMobileBannerRepository.save(banner);
-                    return 1;
+                    banner.setMobileImage(image.storedName());
+                    banner.setMobileAltTag(plan.altTag());
+                    mobileBanners.add(banner);
                 }
-            } else if (imageType.toLowerCase().startsWith("logo")) {
-                if (project.getProjectLogo() != null && !project.getProjectLogo().isBlank()) return 0;
-                String saved = fileUtils.saveImageFromBytes(data, uniqueBaseName, projectDir, PROJECT_LOGO_WIDTH, PROJECT_LOGO_HEIGHT);
-                if (saved != null) {
-                    project.setProjectLogo(saved);
-                    projectRepository.save(project);
-                    return 1;
+                case "logo" -> {
+                    project.setProjectLogo(image.storedName());
+                    projectChanged = true;
                 }
-            } else if (imageType.toLowerCase().startsWith("location")) {
-                if (project.getLocationMap() != null && !project.getLocationMap().isBlank()) return 0;
-                String saved = fileUtils.saveImageFromBytes(data, uniqueBaseName, projectDir, PROJECT_LOCATION_WIDTH, PROJECT_LOCATION_HEIGHT);
-                if (saved != null) {
-                    project.setLocationMap(saved);
-                    projectRepository.save(project);
-                    return 1;
+                case "location" -> {
+                    project.setLocationMap(image.storedName());
+                    projectChanged = true;
                 }
-            } else if (imageType.toLowerCase().startsWith("thumbnail")) {
-                if (project.getProjectThumbnail() != null && !project.getProjectThumbnail().isBlank()) return 0;
-                String saved = fileUtils.saveImageFromBytes(data, uniqueBaseName, projectDir, MOBILE_W, MOBILE_H);
-                if (saved != null) {
-                    project.setProjectThumbnail(saved);
-                    projectRepository.save(project);
-                    return 1;
+                case "thumbnail" -> {
+                    project.setProjectThumbnail(image.storedName());
+                    projectChanged = true;
                 }
-            } else {
-                boolean alreadyExists = projectGalleryRepository.findBySlugUrl(slug).stream()
-                        .anyMatch(g -> altTag.equals(g.getAltTag()));
-                if (alreadyExists) return 0;
-                String saved = fileUtils.saveImageFromBytes(data, uniqueBaseName, projectDir, GALLERY_W, GALLERY_H);
-                if (saved != null) {
+                default -> {
                     ProjectGallery gallery = new ProjectGallery();
                     gallery.setProject(project);
-                    gallery.setImage(saved);
+                    gallery.setImage(image.storedName());
                     gallery.setSlugUrl(slug);
                     gallery.setType("gallery");
-                    gallery.setAltTag(altTag);
-                    projectGalleryRepository.save(gallery);
-                    return 1;
+                    gallery.setAltTag(plan.altTag());
+                    galleries.add(gallery);
                 }
             }
-            return 0;
+            count++;
+        }
+
+        projectGalleryRepository.saveAll(galleries);
+        projectDesktopBannerRepository.saveAll(desktopBanners);
+        projectMobileBannerRepository.saveAll(mobileBanners);
+        if (projectChanged) {
+            projectRepository.save(project);
+        }
+        return count;
     }
 
     private Optional<Project> resolveProjectFromZipKey(String projectKey) {
@@ -550,15 +755,14 @@ public class ProjectExcelUploadService {
                 ? projectStatusName.trim()
                 : "Under Construction";
         ProjectStatus status = projectStatusRepository.findByStatusNameIgnoreCase(statusName)
-                .orElseGet(() -> projectStatusRepository.findAll().isEmpty() ? null
-                        : projectStatusRepository.findAll().get(0));
+                .orElseGet(() -> projectStatusRepository.findAll().stream().findFirst().orElse(null));
         ProjectTypes projectType = null;
         if (propertyTypeName != null && !propertyTypeName.trim().isEmpty()) {
             projectType = projectTypeRepository.findByProjectTypeNameIgnoreCase(propertyTypeName.trim())
                     .orElse(null);
         }
-        if (projectType == null && !projectTypeRepository.findAll().isEmpty()) {
-            projectType = projectTypeRepository.findAll().get(0);
+        if (projectType == null) {
+            projectType = projectTypeRepository.findAll().stream().findFirst().orElse(null);
         }
 
         Optional<Project> existing = projectRepository.findBySlugURL(fileUtils.generateSlug(projectName));
