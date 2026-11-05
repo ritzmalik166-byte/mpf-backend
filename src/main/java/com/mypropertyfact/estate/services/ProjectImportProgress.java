@@ -2,6 +2,9 @@ package com.mypropertyfact.estate.services;
 
 import com.mypropertyfact.estate.models.Response;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -22,6 +25,12 @@ public class ProjectImportProgress {
     private volatile int isSuccess;
     private volatile String message;
     private volatile long finishedAt;
+    private volatile int created;
+    private volatile int updated;
+    private volatile int imagesSaved;
+    private volatile int imagesSkipped;
+    /** Every row error ("Row N: reason"), so a bulk upload can report all of them, not just the first ten. */
+    private final List<String> errors = Collections.synchronizedList(new ArrayList<>());
 
     void startRows(int rows, int images) {
         rowsTotal = rows;
@@ -39,6 +48,14 @@ public class ProjectImportProgress {
 
     void imageDone() {
         imagesDone.incrementAndGet();
+    }
+
+    void recordResult(int created, int updated, int imagesSaved, int imagesSkipped, List<String> rowErrors) {
+        this.created = created;
+        this.updated = updated;
+        this.imagesSaved = imagesSaved;
+        this.imagesSkipped = imagesSkipped;
+        errors.addAll(rowErrors);
     }
 
     void finish(Response result) {
@@ -87,5 +104,27 @@ public class ProjectImportProgress {
 
     public long getFinishedAt() {
         return finishedAt;
+    }
+
+    public int getCreated() {
+        return created;
+    }
+
+    public int getUpdated() {
+        return updated;
+    }
+
+    public int getImagesSaved() {
+        return imagesSaved;
+    }
+
+    public int getImagesSkipped() {
+        return imagesSkipped;
+    }
+
+    public List<String> getErrors() {
+        synchronized (errors) {
+            return new ArrayList<>(errors);
+        }
     }
 }

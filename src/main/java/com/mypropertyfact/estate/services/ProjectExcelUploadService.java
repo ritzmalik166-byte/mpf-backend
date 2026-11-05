@@ -6,7 +6,6 @@ import com.mypropertyfact.estate.models.Response;
 import com.mypropertyfact.estate.repositories.*;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -211,47 +210,54 @@ public class ProjectExcelUploadService {
         int updated = 0;
         boolean hadImages = !imageMap.isEmpty();
 
+        // WorkbookFactory opens both .xlsx and legacy .xls (XSSFWorkbook alone rejected .xls).
         try (InputStream is = new ByteArrayInputStream(excelBytes);
-             Workbook workbook = new XSSFWorkbook(is)) {
+             Workbook workbook = WorkbookFactory.create(is)) {
 
             Sheet sheet = workbook.getSheetAt(0);
-            if (sheet == null || sheet.getPhysicalNumberOfRows() < 2) {
+            boolean noDataRows = sheet == null || sheet.getPhysicalNumberOfRows() < 2;
+            // A header-only sheet is allowed when images come with it: the admin panel sends large
+            // uploads in batches, and a batch may carry only images for projects saved earlier.
+            if (noDataRows && !hadImages) {
                 return failure("Excel must have a header row and at least one data row");
             }
+            if (noDataRows) {
+                progress.startRows(0, imageMap.size());
+            } else {
+                Row headerRow = sheet.getRow(0);
+                Map<String, Integer> colIndex = buildHeaderIndex(headerRow);
+                progress.startRows(sheet.getLastRowNum(), imageMap.size());
 
-            Row headerRow = sheet.getRow(0);
-            Map<String, Integer> colIndex = buildHeaderIndex(headerRow);
-            progress.startRows(sheet.getLastRowNum(), imageMap.size());
-
-            for (int r = 1; r <= sheet.getLastRowNum(); r++) {
-                Row row = sheet.getRow(r);
-                if (row == null) {
-                    progress.rowDone();
-                    continue;
-                }
-
-                String projectName = getCell(colIndex, row, "PROJECT NAME");
-                if (projectName == null || projectName.trim().isEmpty()) {
-                    errors.add("Row " + (r + 1) + ": Project name is required");
-                    progress.rowDone();
-                    continue;
-                }
-
-                try {
-                    RowProcessOutcome outcome = self.processProjectRowInNewTransaction(
-                            row, colIndex, projectName.trim(), r + 1);
-                    if (outcome.error != null) {
-                        errors.add(outcome.error);
-                    } else if (outcome.created) {
-                        created++;
-                    } else if (outcome.updated) {
-                        updated++;
+                for (int r = 1; r <= sheet.getLastRowNum(); r++) {
+                    Row row = sheet.getRow(r);
+                    if (row == null) {
+                        progress.rowDone();
+                        continue;
                     }
-                } catch (Exception e) {
-                    errors.add("Row " + (r + 1) + ": " + e.getMessage());
-                    log.warn("Row {} error: {}", r + 1, e.getMessage(), e);
+
+                    String projectName = getCell(colIndex, row, "PROJECT NAME");
+                    if (projectName == null || projectName.trim().isEmpty()) {
+                        errors.add("Row " + (r + 1) + ": Project name is required");
+                        progress.rowDone();
+                        continue;
+                    }
+
+                    try {
+                        RowProcessOutcome outcome = self.processProjectRowInNewTransaction(
+                                row, colIndex, projectName.trim(), r + 1);
+                        if (outcome.error != null) {
+                            errors.add(outcome.error);
+                        } else if (outcome.created) {
+                            created++;
+                        } else if (outcome.updated) {
+                            updated++;
+                        }
+                    } catch (Exception e) {
+                        errors.add("Row " + (r + 1) + ": " + e.getMessage());
+                        log.warn("Row {} error: {}", r + 1, e.getMessage(), e);
+                    }
+                    progress.rowDone();
                 }
-                progress.rowDone();
             }
         }
 
@@ -265,6 +271,8 @@ public class ProjectExcelUploadService {
             imagesSkipped = imageStats[1];
             log.info("Processed {} images from zip ({} skipped)", imagesProcessed, imagesSkipped);
         }
+
+        progress.recordResult(created, updated, imagesProcessed, imagesSkipped, errors);
 
         StringBuilder msg = new StringBuilder();
         msg.append("Upload completed. Created: ").append(created).append(", Updated: ").append(updated);
