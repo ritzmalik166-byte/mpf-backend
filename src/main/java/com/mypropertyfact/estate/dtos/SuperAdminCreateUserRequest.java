@@ -27,7 +27,7 @@ public class SuperAdminCreateUserRequest {
     private String dashboardUsername;
 
     /**
-     * Role ids (USER, ADMIN). SUPERADMIN is not allowed. If empty, USER is assigned.
+     * Role ids (USER, ADMIN, SUPERADMIN). Only a Super Admin can call this. If empty, USER is assigned.
      */
     private List<Integer> roleIds;
 

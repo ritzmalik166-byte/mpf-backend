@@ -45,10 +45,7 @@ public class UserRoleService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
-        if (userHasRole(userId, "SUPERADMIN")) {
-            throw new IllegalArgumentException(
-                    "Super Admin accounts cannot have their roles changed from Manage Users.");
-        }
+        boolean wasSuper = userHasRole(userId, "SUPERADMIN");
         
         Set<MasterRole> roles = new HashSet<>();
         if (roleIds != null && !roleIds.isEmpty()) {
@@ -57,10 +54,12 @@ public class UserRoleService {
                         .ifPresent(roles::add);
             }
         }
+        // The endpoint is Super Admin only, so granting SUPERADMIN is allowed. Never remove the last Super Admin.
         boolean assigningSuper = roles.stream()
                 .anyMatch(r -> r != null && "SUPERADMIN".equalsIgnoreCase(r.getRoleName()));
-        if (assigningSuper) {
-            throw new IllegalArgumentException("Super Admin role cannot be assigned from Manage Users.");
+        if (wasSuper && !assigningSuper
+                && userRepository.countDistinctUsersHavingActiveRole("SUPERADMIN") <= 1) {
+            throw new IllegalArgumentException("This is the only Super Admin. Make another user Super Admin first.");
         }
         user.setRoles(roles);
         boolean hasAdmin = roles.stream()

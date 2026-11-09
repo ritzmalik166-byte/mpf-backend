@@ -84,11 +84,10 @@ public class UserService{
                 if (n == null) {
                     continue;
                 }
-                if ("SUPERADMIN".equalsIgnoreCase(n)) {
-                    throw new IllegalArgumentException("Super Admin cannot be created from this form.");
-                }
-                if (!"USER".equalsIgnoreCase(n) && !UserRoleService.isStaffAdminRoleName(n)) {
-                    throw new IllegalArgumentException("Only USER and ADMIN roles are allowed here.");
+                // Only reachable by an authenticated Super Admin (checked above), so SUPERADMIN may be granted here.
+                boolean isSuper = "SUPERADMIN".equalsIgnoreCase(n);
+                if (!isSuper && !"USER".equalsIgnoreCase(n) && !UserRoleService.isStaffAdminRoleName(n)) {
+                    throw new IllegalArgumentException("Only USER, ADMIN and SUPERADMIN roles are allowed here.");
                 }
                 if (UserRoleService.isStaffAdminRoleName(n)) {
                     hasAdmin = true;
