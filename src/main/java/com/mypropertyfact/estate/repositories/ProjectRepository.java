@@ -18,6 +18,11 @@ import java.util.Optional;
 @Repository
 public interface ProjectRepository extends JpaRepository<Project, Integer> {
 
+    /** Lightweight id / name / slug list for the admin banner manager (no relations loaded). */
+    @Query("SELECT p.id, p.projectName, p.slugURL FROM Project p ORDER BY p.projectName ASC")
+    List<Object[]> findIdNameSlugOrderByName();
+
+
     Optional<Project> findBySlugURL(String url);
 
     Optional<Project> findFirstByProjectNameIgnoreCase(String projectName);

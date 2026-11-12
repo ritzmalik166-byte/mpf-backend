@@ -21,4 +21,11 @@ public interface ProjectMobileBannerRepository extends JpaRepository<ProjectMobi
             WHERE pdb.project.id = :projectId
             """)
     List<ProjectMobileBannerDto> findByProjectId(@Param("projectId") int projectId);
+
+    @Query("""
+            SELECT new com.mypropertyfact.estate.dtos.ProjectMobileBannerDto(
+            b.id, p.id, p.projectName, p.slugURL, b.mobileAltTag, b.mobileImage)
+            FROM ProjectMobileBanner b JOIN b.project p
+            """)
+    List<ProjectMobileBannerDto> findAllBannerDtos();
 }

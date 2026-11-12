@@ -21,4 +21,11 @@ public interface ProjectDesktopBannerRepository extends JpaRepository<ProjectDes
             WHERE pdb.project.id = :projectId
             """)
     List<ProjectDesktopBannerDto> findByProjectId(@Param("projectId") int projectId);
+
+    @Query("""
+            SELECT new com.mypropertyfact.estate.dtos.ProjectDesktopBannerDto(
+            b.id, p.id, p.projectName, p.slugURL, b.desktopImage, b.desktopAltTag)
+            FROM ProjectDesktopBanner b JOIN b.project p
+            """)
+    List<ProjectDesktopBannerDto> findAllBannerDtos();
 }

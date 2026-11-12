@@ -10,4 +10,8 @@ import org.springframework.stereotype.Repository;
 public interface ProjectBannerRepository extends JpaRepository<ProjectBanner, Integer> {
     @Query("SELECT p FROM ProjectBanner p WHERE slugURL= :slugURL")
     ProjectBanner getBySlug(@Param("slugURL") String slugURL);
+
+    /** Legacy banner rows as [id, projectId, desktopBanner, mobileBanner, altTag], without loading Project entities. */
+    @Query("SELECT b.id, p.id, b.desktopBanner, b.mobileBanner, b.altTag FROM ProjectBanner b JOIN b.project p")
+    java.util.List<Object[]> findAllLite();
 }
