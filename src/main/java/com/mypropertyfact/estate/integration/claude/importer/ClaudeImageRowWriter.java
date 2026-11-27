@@ -58,9 +58,18 @@ public class ClaudeImageRowWriter {
                     b.setMobileAltTag(img.altTag());
                     em.persist(b);
                 }
-                case LOGO -> project.setProjectLogo(img.storedName());
-                case LOCATION -> project.setLocationMap(img.storedName());
-                case THUMBNAIL -> project.setProjectThumbnail(img.storedName());
+                case LOGO -> {
+                    project.setProjectLogo(img.storedName());
+                    project.setProjectLogoAltTag(img.altTag());
+                }
+                case LOCATION -> {
+                    project.setLocationMap(img.storedName());
+                    project.setLocationMapAltTag(img.altTag());
+                }
+                case THUMBNAIL -> {
+                    project.setProjectThumbnail(img.storedName());
+                    project.setProjectThumbnailAltTag(img.altTag());
+                }
                 case GALLERY -> {
                     ProjectGallery g = new ProjectGallery();
                     g.setProject(project);

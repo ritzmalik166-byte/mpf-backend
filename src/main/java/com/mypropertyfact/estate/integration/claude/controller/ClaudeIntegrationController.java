@@ -9,6 +9,7 @@ import com.mypropertyfact.estate.integration.claude.security.ClaudeIntegrationAc
 import com.mypropertyfact.estate.integration.claude.security.ClaudeRateLimiter;
 import com.mypropertyfact.estate.integration.claude.service.ClaudeIntegrationService;
 import com.mypropertyfact.estate.integration.claude.service.ClaudeJobService;
+import com.mypropertyfact.estate.integration.claude.service.ClaudePublishService;
 import com.mypropertyfact.estate.integration.claude.service.ClaudeTemplateService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
@@ -40,6 +41,7 @@ public class ClaudeIntegrationController {
     private final ClaudeIntegrationService integrationService;
     private final ClaudeJobService jobService;
     private final ClaudeTemplateService templateService;
+    private final ClaudePublishService publishService;
 
     @PostMapping(value = "/properties/validate", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize(CAN)
@@ -96,5 +98,21 @@ public class ClaudeIntegrationController {
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"mpf-claude-property-template.xlsx\"")
                 .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                 .body(templateService.workbook());
+    }
+
+    /**
+     * Publishes one unpublished draft that THIS integration account imported. Body must be {@code {"confirm": true}}.
+     * Only {@code projects.status} changes. See {@link ClaudePublishService} for every rule and error code.
+     */
+    @PostMapping("/projects/{projectId}/publish")
+    @PreAuthorize(CAN)
+    public ResponseEntity<Map<String, Object>> publish(@PathVariable("projectId") String projectId,
+                                                       @RequestBody(required = false) String body,
+                                                       Authentication authentication) {
+        User user = access.requireIntegrationUser(authentication);
+        rateLimiter.check("u" + user.getId());
+        int id = publishService.parseProjectId(projectId);
+        publishService.requireConfirmation(body, id);
+        return ResponseEntity.ok(publishService.publish(id, user));
     }
 }
